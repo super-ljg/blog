@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3FS 图解：把上万块 SSD 变成一块超级硬盘</title>
+<meta name="description" content="面向零基础读者的 DeepSeek 3FS（Fire-Flyer File System）架构科普：四大组件、chunk 与复制链、CRAQ 强一致读写、无状态元数据、零拷贝客户端与故障恢复。">
+<meta name="theme-color" content="#0a0e1a">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234d6bfe'/%3E%3Ctext x='32' y='43' font-family='Helvetica,Arial,sans-serif' font-size='26' font-weight='700' fill='white' text-anchor='middle'%3E3FS%3C/text%3E%3C/svg%3E">
+
+<!-- 已部署到 GitHub Pages；换自定义域名时改这里的三处绝对地址 -->
+<link rel="canonical" href="https://super-ljg.github.io/blog/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="3FS 图解：把上万块 SSD 变成一块超级硬盘">
+<meta property="og:description" content="用七张图讲清 DeepSeek 3FS 的四大组件、chunk 与复制链、CRAQ 强一致、无状态元数据和故障恢复。">
+<meta property="og:url" content="https://super-ljg.github.io/blog/">
+<meta property="og:image" content="https://super-ljg.github.io/blog/assets/cover.png">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="3FS 图解：把上万块 SSD 变成一块超级硬盘">
+<meta name="twitter:description" content="用七张图讲清 DeepSeek 3FS 的架构与取舍。">
+<meta name="twitter:image" content="https://super-ljg.github.io/blog/assets/cover.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "3FS 图解：把上万块 SSD 变成一块超级硬盘",
+  "description": "面向零基础读者的 DeepSeek 3FS 架构科普。",
+  "image": "https://super-ljg.github.io/blog/assets/cover.png",
+  "url": "https://super-ljg.github.io/blog/",
+  "datePublished": "2026-11-17",
+  "inLanguage": "zh-CN",
+  "author": { "@type": "Person", "name": "无忧笑" }
+}
+</script>
+<style>
+  :root{
+    color-scheme: light;
+    --bg:#fbfbfa; --bg-soft:#f4f5f7; --card:#ffffff;
+    --ink:#16181d; --ink-2:#3d434e; --muted:#666e7b;
+    --line:#e4e7ec; --line-strong:#cfd5df;
+    --accent:#4d6bfe; --accent-2:#3550d8; --accent-soft:#eef2ff;
+    --amber:#b45309; --amber-soft:#fff7ed; --amber-line:#fed7aa;
+    --green:#0f766e; --green-soft:#ecfdf5;
+    --red:#b91c1c; --red-soft:#fef2f2;
+    --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px rgba(16,24,40,.05);
+    --mono: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans: -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    /* SVG tokens */
+    --s-box:#ffffff; --s-box-soft:#f6f8fc; --s-box-accent:#eef2ff; --s-box-warn:#fff7ed; --s-box-green:#ecfdf5;
+    --s-stroke:#d7dde7; --s-stroke-accent:#c3cffd; --s-stroke-warn:#fcd9ac;
+    --s-t:#1b2230; --s-ts:#5c6470; --s-tm:#3f5ae0;
+    --s-line:#c2cad6; --s-line-d:#b7c0ce;
+  }
+  [data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#0d0f14; --bg-soft:#141821; --card:#141821;
+    --ink:#e7eaf0; --ink-2:#c3c9d4; --muted:#8b93a3;
+    --line:#252a35; --line-strong:#333a48;
+    --accent:#7f96ff; --accent-2:#a3b4ff; --accent-soft:#1b2340;
+    --amber:#f0b464; --amber-soft:#2a2113; --amber-line:#4a3a1d;
+    --green:#5dd6c0; --green-soft:#0f2724;
+    --red:#f08a8a; --red-soft:#2a1414;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+    --s-box:#1a1f2a; --s-box-soft:#171c26; --s-box-accent:#1b2340; --s-box-warn:#2a2113; --s-box-green:#0f2724;
+    --s-stroke:#2d3442; --s-stroke-accent:#3a4a86; --s-stroke-warn:#4a3a1d;
+    --s-t:#e7eaf0; --s-ts:#9aa3b4; --s-tm:#9fb1ff;
+    --s-line:#3a4252; --s-line-d:#4a5364;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:17px;line-height:1.85;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+  a:hover{border-bottom-color:var(--accent)}
+  ::selection{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+
+  #progress{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#4d6bfe,#7f96ff);z-index:100;transition:width .1s linear}
+
+  .theme-toggle{
+    position:fixed;top:18px;right:20px;z-index:90;
+    width:40px;height:40px;border-radius:50%;border:1px solid var(--line);
+    background:var(--card);color:var(--ink);cursor:pointer;font-size:16px;
+    box-shadow:var(--shadow);display:grid;place-items:center;
+  }
+
+  /* ---------- hero ---------- */
+  .hero{
+    position:relative;overflow:hidden;color:#eef1f8;
+    background:radial-gradient(1200px 500px at 15% -10%,#2b3f8f 0%,transparent 60%),
+               radial-gradient(900px 500px at 90% 10%,#1b5f6b 0%,transparent 55%),
+               linear-gradient(160deg,#0a0e1a 0%,#101728 55%,#0b1220 100%);
+    padding:76px 24px 68px;
+  }
+  .hero::after{
+    content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+    background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+    background-size:52px 52px;
+    mask-image:radial-gradient(80% 70% at 50% 30%,#000 20%,transparent 75%);
+  }
+  .hero-inner{max-width:1080px;margin:0 auto;position:relative;z-index:1}
+  .eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:12.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:#9fb1ff;border:1px solid rgba(159,177,255,.35);
+    padding:6px 12px;border-radius:999px;background:rgba(159,177,255,.08)}
+  .hero h1{
+    font-size:clamp(30px,4.6vw,52px);line-height:1.22;margin:22px 0 16px;
+    letter-spacing:-.02em;font-weight:800;
+  }
+  .hero h1 em{font-style:normal;background:linear-gradient(90deg,#8ea6ff,#6ee7d0);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{font-size:clamp(15px,1.6vw,18.5px);line-height:1.85;color:#b9c2d6;max-width:760px;margin:0}
+  .hero-meta{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:30px;font-size:13.5px;color:#8f9ab1}
+  .hero-meta b{color:#d8dfef;font-weight:600}
+  .hero-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:26px}
+  .hero-tags span{font-size:12.5px;color:#c5cde0;border:1px solid rgba(255,255,255,.14);padding:4px 10px;border-radius:6px;background:rgba(255,255,255,.04)}
+
+  /* ---------- layout ---------- */
+  .layout{max-width:1120px;margin:0 auto;padding:56px 24px 40px;display:grid;grid-template-columns:212px minmax(0,1fr);gap:64px;align-items:start}
+  .toc{position:sticky;top:26px;font-size:13.5px;line-height:1.6}
+  .toc h4{margin:0 0 12px;font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .toc ol{list-style:none;margin:0;padding:0;border-left:1px solid var(--line)}
+  .toc li{margin:0}
+  .toc a{display:block;padding:6px 0 6px 14px;margin-left:-1px;border-left:2px solid transparent;border-bottom:none;color:var(--muted)}
+  .toc a:hover{color:var(--ink)}
+  .toc a.active{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+  article{min-width:0;max-width:780px}
+
+  /* ---------- typography ---------- */
+  h2{font-size:clamp(23px,2.6vw,30px);line-height:1.35;letter-spacing:-.015em;margin:0 0 18px;font-weight:750}
+  h3{font-size:19px;line-height:1.5;margin:38px 0 12px;font-weight:700}
+  h4{font-size:16px;margin:26px 0 8px;font-weight:700;color:var(--ink)}
+  p{margin:0 0 18px}
+  .sec{padding-top:58px;scroll-margin-top:24px}
+  .sec:first-of-type{padding-top:8px}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+  .sec-no{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--accent);font-weight:700;padding-top:4px}
+  .sec-head h2{margin:0}
+  strong{font-weight:700;color:var(--ink)}
+  .muted{color:var(--muted)}
+  .kbd{font-family:var(--mono);font-size:.88em;background:var(--bg-soft);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--ink-2)}
+  ul.clean{margin:0 0 20px;padding-left:1.15em}
+  ul.clean li{margin-bottom:9px}
+  ul.clean li::marker{color:var(--accent)}
+
+  /* ---------- callouts ---------- */
+  .callout{position:relative;margin:26px 0;padding:17px 20px 15px 22px;border-radius:12px;
+    background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 22%,transparent);font-size:16px}
+  .callout .label{display:block;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:800;color:var(--accent);margin-bottom:6px}
+  .callout p:last-child{margin-bottom:0}
+  .callout.analogy{background:var(--amber-soft);border-color:var(--amber-line)}
+  .callout.analogy .label{color:var(--amber)}
+  .callout.warn{background:var(--red-soft);border-color:color-mix(in srgb,var(--red) 25%,transparent)}
+  .callout.warn .label{color:var(--red)}
+
+  /* ---------- figures ---------- */
+  figure{margin:30px 0 34px;background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:20px 18px 14px;box-shadow:var(--shadow);overflow:hidden}
+  figure svg{display:block;width:100%;height:auto;overflow:visible}
+  figcaption{font-size:13.5px;line-height:1.65;color:var(--muted);margin-top:12px;padding-top:11px;border-top:1px dashed var(--line)}
+  figcaption b{color:var(--ink-2);font-weight:650}
+
+  /* SVG theme classes */
+  .dg text{font-family:var(--sans)}
+  .dg .box{fill:var(--s-box);stroke:var(--s-stroke);stroke-width:1.2}
+  .dg .soft{fill:var(--s-box-soft);stroke:var(--s-stroke);stroke-width:1.2}
+  .dg .accent{fill:var(--s-box-accent);stroke:var(--s-stroke-accent);stroke-width:1.2}
+  .dg .warn{fill:var(--s-box-warn);stroke:var(--s-stroke-warn);stroke-width:1.2}
+  .dg .good{fill:var(--s-box-green);stroke:color-mix(in srgb,var(--green) 40%,transparent);stroke-width:1.2}
+  .dg .t{fill:var(--s-t);font-size:13px;font-weight:650}
+  .dg .ts{fill:var(--s-ts);font-size:11px}
+  .dg .tm{fill:var(--s-tm);font-size:11px;font-weight:700}
+  .dg .line{fill:none;stroke:var(--s-line);stroke-width:1.6}
+  .dg .line-d{fill:none;stroke:var(--s-line-d);stroke-width:1.4;stroke-dasharray:5 4}
+  .dg .line-a{fill:none;stroke:var(--accent);stroke-width:1.8}
+  .dg .line-r{fill:none;stroke:var(--amber);stroke-width:1.6;stroke-dasharray:5 4}
+  .dg .dot{fill:var(--accent)}
+  .dg .chip{fill:var(--s-box-soft);stroke:var(--s-stroke);stroke-width:1}
+
+  /* stepper */
+  .stepper{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 12px}
+  .stepper button{
+    font:inherit;font-size:13px;padding:6px 13px;border-radius:999px;cursor:pointer;
+    background:var(--bg-soft);color:var(--ink-2);border:1px solid var(--line);transition:.18s;
+  }
+  .stepper button:hover{border-color:var(--accent);color:var(--accent)}
+  .stepper button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  .step-text{font-size:14.5px;line-height:1.75;color:var(--ink-2);margin:0 0 6px;min-height:3.4em}
+  .step-text b{color:var(--ink)}
+  .dg [data-s]{opacity:.2;transition:opacity .35s ease}
+  .dg [data-s].on{opacity:1}
+
+  /* ---------- tables ---------- */
+  .tablewrap{overflow-x:auto;margin:24px 0 30px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.6}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--bg-soft);font-weight:700;font-size:13px;color:var(--ink-2);white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td code,th code{font-family:var(--mono);font-size:12.5px;background:var(--bg-soft);padding:1px 5px;border-radius:4px}
+
+  /* ---------- code block ---------- */
+  pre{background:var(--bg-soft);border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow-x:auto;
+      font-family:var(--mono);font-size:13px;line-height:1.75;margin:22px 0 28px;color:var(--ink-2)}
+  pre b{color:var(--accent);font-weight:700}
+  code.inline{font-family:var(--mono);font-size:.87em;background:var(--bg-soft);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+
+  /* ---------- stat cards ---------- */
+  .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:26px 0 30px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 16px;box-shadow:var(--shadow)}
+  .stat .n{font-size:clamp(22px,3vw,29px);font-weight:800;letter-spacing:-.02em;color:var(--accent);line-height:1.2}
+  .stat .n small{font-size:13px;font-weight:600;color:var(--muted);margin-left:2px}
+  .stat .d{font-size:13px;line-height:1.6;color:var(--muted);margin-top:6px}
+
+  /* ---------- compare panels ---------- */
+  .panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:26px 0 8px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+  .panel h4{margin:0 0 4px;font-size:14.5px}
+  .panel .sub{font-size:12px;color:var(--muted);margin-bottom:12px}
+  .chain{display:grid;grid-template-columns:34px repeat(3,1fr);gap:6px;align-items:center;margin-bottom:6px}
+  .chain .lab{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .chip{font-family:var(--mono);font-size:11.5px;text-align:center;padding:5px 0;border-radius:6px;
+        background:var(--bg-soft);border:1px solid var(--line);color:var(--ink-2)}
+  .chip.fail{background:var(--red-soft);border-color:color-mix(in srgb,var(--red) 35%,transparent);color:var(--red);text-decoration:line-through}
+  .chip.hot{background:var(--amber-soft);border-color:var(--amber-line);color:var(--amber);font-weight:700}
+  .chip.cool{background:var(--green-soft);border-color:color-mix(in srgb,var(--green) 30%,transparent);color:var(--green)}
+  .panels-note{font-size:13.5px;line-height:1.7;color:var(--muted);margin:6px 0 0}
+
+  /* ---------- summary ---------- */
+  .summary{background:linear-gradient(160deg,var(--accent-soft),transparent 70%);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);
+    border-radius:18px;padding:26px 26px 8px;margin:34px 0}
+  .summary h3{margin-top:0}
+  .summary ol{margin:0 0 20px;padding-left:1.2em}
+  .summary li{margin-bottom:10px}
+
+  .footer{max-width:1120px;margin:20px auto 0;padding:36px 24px 70px;border-top:1px solid var(--line);color:var(--muted);font-size:13.5px;line-height:1.8}
+  .footer h4{color:var(--ink);font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 10px}
+  .footer ul{list-style:none;padding:0;margin:0 0 22px}
+  .footer li{margin-bottom:6px}
+  .footer a{color:var(--ink-2)}
+
+  @media (max-width:900px){
+    .layout{grid-template-columns:1fr;gap:0;padding-top:34px}
+    .toc{display:none}
+    .stats{grid-template-columns:1fr}
+    .panels{grid-template-columns:1fr}
+    body{font-size:16.5px}
+  }
+  @media print{
+    #progress,.theme-toggle,.toc,.stepper{display:none!important}
+    body{background:#fff;color:#000;font-size:11.5pt}
+    .hero{background:#fff;color:#000;padding:0 0 18px}
+    .hero::after{display:none}
+    .hero p.lead,.hero-meta,.hero-meta b,.hero-tags span{color:#333}
+    figure,.panel,.stat,.summary{box-shadow:none;break-inside:avoid}
+    .sec{break-inside:avoid-page}
+  }
+</style>
+</head>
+<body>
+<div id="progress" aria-hidden="true"></div>
+<button class="theme-toggle" id="themeBtn" aria-label="切换深浅色主题" title="切换深浅色主题">◐</button>
+
+<header class="hero">
+  <div class="hero-inner">
+    <span class="eyebrow">Distributed Storage · 图解</span>
+    <h1>把上万块 SSD 变成<em>一块超级硬盘</em><br>3FS 架构图解</h1>
+    <p class="lead">
+      训练一个大模型，几千张 GPU 会同时向存储要数据：喂样本、存 checkpoint、缓存推理的 KVCache。
+      普通文件系统撑不住这个吞吐。DeepSeek 为此写了 3FS —— 一个跑在 RDMA 网络上的分布式文件系统。
+      这篇不堆术语，从「为什么要它」讲到「它怎么做到」，配七张图，看完你能自己讲给别人听。
+    </p>
+    <div class="hero-tags">
+      <span>分离式架构</span><span>CRAQ 强一致</span><span>无状态元数据</span><span>零拷贝客户端</span><span>故障即常态</span>
+    </div>
+    <div class="hero-meta">
+      <span>依据 <b>deepseek-ai/3FS</b> 官方 README 与 design_notes</span>
+      <span>阅读约 <b>20 分钟</b></span>
+      <span>零基础友好</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="目录">
+    <h4>目录</h4>
+    <ol>
+      <li><a href="#why">01 · 为什么要自研</a></li>
+      <li><a href="#overview">02 · 四个角色</a></li>
+      <li><a href="#placement">03 · 数据怎么摆</a></li>
+      <li><a href="#craq">04 · 强一致的读写</a></li>
+      <li><a href="#meta">05 · 元数据放哪</a></li>
+      <li><a href="#client">06 · 两条客户端路</a></li>
+      <li><a href="#failure">07 · 坏了怎么办</a></li>
+      <li><a href="#perf">08 · 性能与取舍</a></li>
+      <li><a href="#summary">09 · 一页总结</a></li>
+    </ol>
+  </nav>
+
+  <article>
+
+    <section class="sec" id="why">
+      <div class="sec-head"><span class="sec-no">01</span><h2>为什么要自研一个文件系统</h2></div>
+
+      <p>
+        先看训练集群里真实发生的三件事，它们对存储的要求几乎互相矛盾：
+      </p>
+      <ul class="clean">
+        <li><strong>喂数据（Dataloader）</strong>：几千张卡各自随机抽取训练样本，读的大小从几十 KB 到几 MB 不等，而且样本在文件里通常不对齐。需要的是<strong>海量随机小读</strong>。</li>
+        <li><strong>存 checkpoint</strong>：每隔一段时间，所有卡同时把模型权重刷出去，瞬间产生几十 TB 的写入。需要的是<strong>极高带宽的顺序写</strong>。</li>
+        <li><strong>推理 KVCache</strong>：把历史 token 的 KV 向量放到外部存储，下次直接复用，省掉重复计算。需要的是<strong>大容量 + 高吞吐 + 可回收</strong>。</li>
+      </ul>
+
+      <p>
+        现成方案都不太合适。对象存储吞吐够，但没有真正的目录语义：把目录整体 rename 是原子的、递归删除整个目录、
+        软链接做数据集快照——这些在对象存储上要么做不到，要么得靠应用层凑。传统网络文件系统（NFS 类）单点瓶颈明显，
+        带宽随节点数上不去。而每台机器挂本地盘，又变成一个个数据孤岛，别的机器读不到。
+      </p>
+
+      <p>3FS 的三条设计目标，正好对应上面三个痛点：</p>
+
+      <div class="callout">
+        <span class="label">三句话记住 3FS</span>
+        <p><strong>① 位置无关</strong>：应用不需要知道数据在哪块盘、哪台机器上，像访问本地文件一样访问整个集群的存储。</p>
+        <p><strong>② 强一致</strong>：多个客户端并发读写，看到的结果和单机文件系统一样好推理，不用在应用里处理「可能读到旧数据」。</p>
+        <p><strong>③ 文件接口</strong>：POSIX 风格的文件与目录，现有代码几乎不用改就能接进来。</p>
+      </div>
+
+      <p>
+        名字里的 Fire-Flyer 是 DeepSeek 内部计算集群的代号。它不是一个通用型存储产品，
+        而是为「大文件、高吞吐、读多写少、集群内网」这个非常具体的场景，做了大量针对性取舍——这点后面会反复出现。
+      </p>
+    </section>
+
+    <section class="sec" id="overview">
+      <div class="sec-head"><span class="sec-no">02</span><h2>全景：四个角色，一张网</h2></div>
+
+      <p>
+        3FS 只有四种进程，全部连在同一张 RDMA 网络（InfiniBand 或 RoCE）上。可以用一个图书馆来类比：
+      </p>
+      <ul class="clean">
+        <li><strong>客户端（Client）</strong>＝ 读者。它拿着借书证（文件描述符）来借书，自己不藏书。</li>
+        <li><strong>元数据服务（Meta Service）</strong>＝ 前台目录柜。它只管「哪本书在哪个区」，不碰书的内容。</li>
+        <li><strong>存储服务（Storage Service）</strong>＝ 书架。书（数据）真正放在它管理的 SSD 上。</li>
+        <li><strong>集群管理器（Cluster Manager）</strong>＝ 馆长。谁在上班、哪个书架坏了、该怎么重新分配，都归它管。</li>
+      </ul>
+
+      <figure class="dg">
+        <svg viewBox="0 0 920 600" role="img" aria-labelledby="fig1title">
+          <title id="fig1title">3FS 四个组件与 RDMA 网络的全景架构</title>
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#4d6bfe"/>
+            </marker>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#a9b3c4"/>
+            </marker>
+          </defs>
+
+          <!-- clients -->
+          <rect class="soft" x="22" y="60" width="208" height="206" rx="14"/>
+          <text class="t" x="126" y="88" text-anchor="middle">客户端 Client</text>
+          <rect class="box" x="40" y="104" width="172" height="38" rx="8"/>
+          <text class="ts" x="126" y="128" text-anchor="middle">训练任务 / Dataloader</text>
+          <rect class="box" x="40" y="150" width="172" height="38" rx="8"/>
+          <text class="ts" x="126" y="174" text-anchor="middle">数据分析 / 数据准备</text>
+          <rect class="box" x="40" y="196" width="172" height="38" rx="8"/>
+          <text class="ts" x="126" y="220" text-anchor="middle">推理服务 / KVCache</text>
+
+          <!-- rdma -->
+          <rect class="accent" x="258" y="112" width="150" height="104" rx="52"/>
+          <text class="tm" x="333" y="152" text-anchor="middle">RDMA 网络</text>
+          <text class="ts" x="333" y="172" text-anchor="middle">InfiniBand / RoCE</text>
+          <text class="ts" x="333" y="190" text-anchor="middle">200 / 400 Gbps</text>
+          <line class="line-a" x1="234" y1="164" x2="252" y2="164" marker-end="url(#a1)"/>
+          <line class="line-a" x1="414" y1="164" x2="438" y2="164" marker-end="url(#a1)"/>
+
+          <!-- storage -->
+          <rect class="soft" x="436" y="42" width="462" height="246" rx="14"/>
+          <text class="t" x="667" y="70" text-anchor="middle">存储服务 Storage Service × N（每台管几块本地 NVMe）</text>
+
+          <g>
+            <rect class="box" x="452" y="86" width="138" height="182" rx="10"/>
+            <text class="t" x="521" y="108" text-anchor="middle" font-size="12">节点 A</text>
+            <rect class="chip" x="466" y="120" width="110" height="30" rx="6"/>
+            <text class="ts" x="521" y="139" text-anchor="middle">storage svc</text>
+            <rect class="chip" x="466" y="160" width="50" height="88" rx="6"/>
+            <text class="ts" x="491" y="204" text-anchor="middle" font-size="10">SSD</text>
+            <text class="ts" x="491" y="220" text-anchor="middle" font-size="9">targets</text>
+            <rect class="chip" x="526" y="160" width="50" height="88" rx="6"/>
+            <text class="ts" x="551" y="204" text-anchor="middle" font-size="10">SSD</text>
+            <text class="ts" x="551" y="220" text-anchor="middle" font-size="9">targets</text>
+          </g>
+          <g>
+            <rect class="box" x="600" y="86" width="138" height="182" rx="10"/>
+            <text class="t" x="669" y="108" text-anchor="middle" font-size="12">节点 B</text>
+            <rect class="chip" x="614" y="120" width="110" height="30" rx="6"/>
+            <text class="ts" x="669" y="139" text-anchor="middle">storage svc</text>
+            <rect class="chip" x="614" y="160" width="50" height="88" rx="6"/>
+            <text class="ts" x="639" y="204" text-anchor="middle" font-size="10">SSD</text>
+            <text class="ts" x="639" y="220" text-anchor="middle" font-size="9">targets</text>
+            <rect class="chip" x="674" y="160" width="50" height="88" rx="6"/>
+            <text class="ts" x="699" y="204" text-anchor="middle" font-size="10">SSD</text>
+            <text class="ts" x="699" y="220" text-anchor="middle" font-size="9">targets</text>
+          </g>
+          <g>
+            <rect class="box" x="748" y="86" width="138" height="182" rx="10"/>
+            <text class="t" x="817" y="108" text-anchor="middle" font-size="12">节点 C</text>
+            <rect class="chip" x="762" y="120" width="110" height="30" rx="6"/>
+            <text class="ts" x="817" y="139" text-anchor="middle">storage svc</text>
+            <rect class="chip" x="762" y="160" width="50" height="88" rx="6"/>
+            <text class="ts" x="787" y="204" text-anchor="middle" font-size="10">SSD</text>
+            <text class="ts" x="787" y="220" text-anchor="middle" font-size="9">targets</text>
+            <rect class="chip" x="822" y="160" width="50" height="88" rx="6"/>
+            <text class="ts" x="847" y="204" text-anchor="middle" font-size="10">SSD</text>
+            <text class="ts" x="847" y="220" text-anchor="middle" font-size="9">targets</text>
+          </g>
+
+          <!-- bottom: meta, fdb, cluster -->
+          <rect class="soft" x="22" y="356" width="256" height="180" rx="14"/>
+          <text class="t" x="150" y="384" text-anchor="middle" font-size="12.5">元数据服务（无状态，可横向扩）</text>
+          <rect class="box" x="38" y="400" width="72" height="54" rx="8"/>
+          <text class="ts" x="74" y="432" text-anchor="middle">Meta</text>
+          <rect class="box" x="118" y="400" width="72" height="54" rx="8"/>
+          <text class="ts" x="154" y="432" text-anchor="middle">Meta</text>
+          <rect class="box" x="198" y="400" width="72" height="54" rx="8"/>
+          <text class="ts" x="234" y="432" text-anchor="middle">Meta</text>
+          <text class="ts" x="150" y="486" text-anchor="middle">不存状态 → 重启不中断，客户端随便连</text>
+
+          <rect class="soft" x="302" y="356" width="266" height="180" rx="14"/>
+          <text class="t" x="435" y="384" text-anchor="middle">FoundationDB（事务型 KV）</text>
+          <rect class="box" x="320" y="400" width="230" height="80" rx="8"/>
+          <text class="ts" x="435" y="426" text-anchor="middle">inode / dentry 全部落在这里</text>
+          <text class="ts" x="435" y="446" text-anchor="middle">可串行快照隔离（SSI）</text>
+          <text class="ts" x="435" y="466" text-anchor="middle">元数据的一致性由它兜底</text>
+          <text class="ts" x="435" y="506" text-anchor="middle">生产环境与选主共用同一套 KV</text>
+
+          <rect class="soft" x="592" y="356" width="306" height="180" rx="14"/>
+          <text class="t" x="745" y="384" text-anchor="middle">集群管理器 mgmtd</text>
+          <rect class="box" x="608" y="400" width="130" height="54" rx="8"/>
+          <text class="ts" x="673" y="422" text-anchor="middle">主（primary）</text>
+          <text class="ts" x="673" y="440" text-anchor="middle">发心跳 / 改链</text>
+          <rect class="box" x="750" y="400" width="130" height="54" rx="8"/>
+          <text class="ts" x="815" y="422" text-anchor="middle">备用 ×N</text>
+          <text class="ts" x="815" y="440" text-anchor="middle">主挂了顶上</text>
+          <text class="ts" x="745" y="486" text-anchor="middle">成员管理 · 故障检测 · 分发集群配置</text>
+
+          <!-- control links -->
+          <line class="line-d" x1="148" y1="266" x2="148" y2="350" marker-end="url(#a2)"/>
+          <text class="ts" x="158" y="300">open / stat / 取布局</text>
+          <line class="line-d" x1="745" y1="288" x2="745" y2="350" marker-end="url(#a2)"/>
+          <text class="ts" x="757" y="324">心跳 / 续租</text>
+          <line class="line-a" x1="280" y1="452" x2="298" y2="452" marker-end="url(#a1)"/>
+          <text class="ts" x="289" y="442" text-anchor="middle" font-size="10">事务</text>
+        </svg>
+        <figcaption><b>图 1 · 全景。</b>数据面（客户端 ↔ 存储服务）走 RDMA 直连；控制面（心跳、链变更、配置分发）由集群管理器统一广播。元数据服务本身不存数据，状态全在 FoundationDB 里。</figcaption>
+      </figure>
+
+      <p>
+        注意图里那条虚线：元数据和存储服务都持续向集群管理器<strong>发心跳</strong>。心跳不是「报个平安」那么简单，
+        它本质上是在<strong>续租约</strong>——这一点在第 7 节讲故障时会成为关键。
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>组件</th><th>一句话职责</th><th>有没有状态</th></tr></thead>
+          <tbody>
+            <tr><td><strong>客户端</strong></td><td>把应用的 open/read/write 翻译成对存储服务的请求</td><td>只缓存布局信息</td></tr>
+            <tr><td><strong>元数据服务</strong></td><td>实现文件系统语义，把目录操作翻译成 KV 事务</td><td>无状态（状态在 FDB）</td></tr>
+            <tr><td><strong>存储服务</strong></td><td>管理本地 SSD，对外提供 chunk 读写</td><td>有状态（数据 + chunk 元数据）</td></tr>
+            <tr><td><strong>集群管理器</strong></td><td>成员管理、故障判定、维护并广播复制链表</td><td>有状态（存 FDB，多副本选主）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sec" id="placement">
+      <div class="sec-head"><span class="sec-no">03</span><h2>数据怎么摆：文件 → chunk → 链</h2></div>
+
+      <p>
+        3FS 不在存储节点上维护一棵「完整的目录树」。它先把文件切成等长的块，再用「复制链」把这些块分散到很多块盘上。
+        这里有四个必须分清的词，是后面所有讨论的地基：
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>概念</th><th>是什么</th><th>类比</th></tr></thead>
+          <tbody>
+            <tr><td><code>chunk</code></td><td>文件按固定大小切出来的块，chunk ID = inode ID + 块序号</td><td>把一本厚书拆成若干册</td></tr>
+            <tr><td><code>target</code></td><td>一块 SSD 上的一块逻辑存储单元，是复制的最小单位</td><td>书架上的一个格子</td></tr>
+            <tr><td><code>chain</code></td><td>若干 target 按顺序排成的一条复制链（通常 3 副本），有版本号</td><td>同一本书放在 3 个格子里，标好先后</td></tr>
+            <tr><td><code>chain table</code></td><td>一组链的集合，决定数据的整体放置策略</td><td>整个书库的分区方案</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        为什么要绕这么一圈？因为如果一个大文件整块放在一台机器上，那台机器的网卡就是瓶颈，别的机器的带宽全闲着。
+        切成 chunk 再条带化（stripe）到多条链上，读一个大文件时，<strong>几百块 SSD 和几百张网卡同时在干活</strong>，
+        聚合带宽才可能到 TB/s 级别。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 920 500" role="img" aria-labelledby="fig2title">
+          <title id="fig2title">文件被切分为 chunk 并条带化到多条复制链，最终落在不同 SSD 上</title>
+          <defs>
+            <marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#a9b3c4"/>
+            </marker>
+          </defs>
+
+          <text class="ts" x="34" y="26">一个 8GB 的文件 · 按 stripe 轮询切分，再条带化到多条链上</text>
+          <rect class="box" x="30" y="36" width="860" height="56" rx="8"/>
+          <g class="ts">
+            <line class="line" x1="137" y1="36" x2="137" y2="92"/>
+            <line class="line" x1="244" y1="36" x2="244" y2="92"/>
+            <line class="line" x1="351" y1="36" x2="351" y2="92"/>
+            <line class="line" x1="458" y1="36" x2="458" y2="92"/>
+            <line class="line" x1="565" y1="36" x2="565" y2="92"/>
+            <line class="line" x1="672" y1="36" x2="672" y2="92"/>
+            <line class="line" x1="779" y1="36" x2="779" y2="92"/>
+          </g>
+          <g class="ts" text-anchor="middle">
+            <text x="83" y="70">chunk 0</text><text x="190" y="70">chunk 1</text>
+            <text x="297" y="70">chunk 2</text><text x="404" y="70">chunk 3</text>
+            <text x="511" y="70">chunk 4</text><text x="618" y="70">chunk 5</text>
+            <text x="725" y="70">chunk 6</text><text x="832" y="70">chunk 7</text>
+          </g>
+
+          <!-- chains -->
+          <g>
+            <rect class="soft" x="30" y="150" width="270" height="110" rx="10"/>
+            <text class="t" x="165" y="174" text-anchor="middle" font-size="12">复制链 #1 · 版本 v7</text>
+            <rect class="box" x="46" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="82" y="210" text-anchor="middle">A1</text><text class="ts" x="82" y="226" text-anchor="middle" font-size="9.5">head</text>
+            <rect class="box" x="129" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="165" y="210" text-anchor="middle">B1</text><text class="ts" x="165" y="226" text-anchor="middle" font-size="9.5">middle</text>
+            <rect class="box" x="212" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="248" y="210" text-anchor="middle">C1</text><text class="ts" x="248" y="226" text-anchor="middle" font-size="9.5">tail</text>
+          </g>
+          <g>
+            <rect class="soft" x="325" y="150" width="270" height="110" rx="10"/>
+            <text class="t" x="460" y="174" text-anchor="middle" font-size="12">复制链 #2 · 版本 v7</text>
+            <rect class="box" x="341" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="377" y="210" text-anchor="middle">D1</text><text class="ts" x="377" y="226" text-anchor="middle" font-size="9.5">head</text>
+            <rect class="box" x="424" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="460" y="210" text-anchor="middle">E1</text><text class="ts" x="460" y="226" text-anchor="middle" font-size="9.5">middle</text>
+            <rect class="box" x="507" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="543" y="210" text-anchor="middle">F1</text><text class="ts" x="543" y="226" text-anchor="middle" font-size="9.5">tail</text>
+          </g>
+          <g>
+            <rect class="soft" x="620" y="150" width="270" height="110" rx="10"/>
+            <text class="t" x="755" y="174" text-anchor="middle" font-size="12">复制链 #3 · 版本 v7</text>
+            <rect class="box" x="636" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="672" y="210" text-anchor="middle">A2</text><text class="ts" x="672" y="226" text-anchor="middle" font-size="9.5">head</text>
+            <rect class="box" x="719" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="755" y="210" text-anchor="middle">B2</text><text class="ts" x="755" y="226" text-anchor="middle" font-size="9.5">middle</text>
+            <rect class="box" x="802" y="190" width="72" height="46" rx="7"/>
+            <text class="ts" x="838" y="210" text-anchor="middle">C2</text><text class="ts" x="838" y="226" text-anchor="middle" font-size="9.5">tail</text>
+          </g>
+
+          <!-- mapping -->
+          <path class="line-d" d="M83 92 L83 110 L165 110 L165 146" marker-end="url(#b1)"/>
+          <path class="line-d" d="M190 92 L190 122 L460 122 L460 146" marker-end="url(#b1)"/>
+          <path class="line-d" d="M297 92 L297 134 L755 134 L755 146" marker-end="url(#b1)"/>
+          <text class="ts" x="460" y="282" text-anchor="middle" font-size="10.5">chunk 3 之后继续轮询回链 #1、#2…；每条链 3 个副本，落在不同节点的不同 SSD 上</text>
+
+          <!-- ssd row -->
+          <text class="ts" x="30" y="312">物理层：每块 SSD 上切出多个 target，不同 target 加入不同链</text>
+          <g>
+            <rect class="chip" x="30" y="326" width="136" height="58" rx="8"/>
+            <text class="ts" x="98" y="348" text-anchor="middle" font-size="11">SSD · 节点 A</text>
+            <text class="ts" x="98" y="366" text-anchor="middle" font-size="10">A1 A2 A3 A4 A5</text>
+          </g>
+          <g>
+            <rect class="chip" x="178" y="326" width="136" height="58" rx="8"/>
+            <text class="ts" x="246" y="348" text-anchor="middle" font-size="11">SSD · 节点 B</text>
+            <text class="ts" x="246" y="366" text-anchor="middle" font-size="10">B1 B2 B3 B4 B5</text>
+          </g>
+          <g>
+            <rect class="chip" x="326" y="326" width="136" height="58" rx="8"/>
+            <text class="ts" x="394" y="348" text-anchor="middle" font-size="11">SSD · 节点 C</text>
+            <text class="ts" x="394" y="366" text-anchor="middle" font-size="10">C1 C2 C3 C4 C5</text>
+          </g>
+          <g>
+            <rect class="chip" x="474" y="326" width="136" height="58" rx="8"/>
+            <text class="ts" x="542" y="348" text-anchor="middle" font-size="11">SSD · 节点 D</text>
+            <text class="ts" x="542" y="366" text-anchor="middle" font-size="10">D1 D2 D3 D4 D5</text>
+          </g>
+          <g>
+            <rect class="chip" x="622" y="326" width="136" height="58" rx="8"/>
+            <text class="ts" x="690" y="348" text-anchor="middle" font-size="11">SSD · 节点 E</text>
+            <text class="ts" x="690" y="366" text-anchor="middle" font-size="10">E1 E2 E3 E4 E5</text>
+          </g>
+          <g>
+            <rect class="chip" x="770" y="326" width="120" height="58" rx="8"/>
+            <text class="ts" x="830" y="348" text-anchor="middle" font-size="11">SSD · 节点 F</text>
+            <text class="ts" x="830" y="366" text-anchor="middle" font-size="10">F1 F2 F3 F4 F5</text>
+          </g>
+
+          <rect class="accent" x="30" y="412" width="860" height="58" rx="10"/>
+          <text class="ts" x="46" y="436">客户端拿到一次「布局信息」后，可以自己算出第 N 个 chunk 该去链 #几——</text>
+          <text class="tm" x="46" y="456">关键路径上不需要再问元数据服务。这是 3FS 能线性扩展的关键之一。</text>
+        </svg>
+        <figcaption><b>图 2 · 三层映射。</b>文件 → 等长 chunk → 复制链 → 链上的 target → 物理 SSD。链的成员变化时<strong>版本号递增</strong>，写请求带着版本号，对不上就拒绝，防止用旧拓扑写乱数据。</figcaption>
+      </figure>
+
+      <h3>建文件时发生了什么</h3>
+      <p>
+        创建文件时，元数据服务按 stripe 大小从指定的 chain table 里<strong>轮询</strong>挑一段连续的链，再生成一个随机种子打乱顺序，
+        把「选了哪一段链 + 种子 + chunk 大小」写进 inode。之后客户端只要读一次 inode，就能在本地算出每个 chunk 的位置。
+      </p>
+
+      <div class="callout analogy">
+        <span class="label">类比</span>
+        <p>像快递分拣：包裹（chunk）按规则轮流扔进不同的传送带（chain），传送带上三个站点（target）各存一份。收件人只要知道「我的包裹走哪条传送带」，就能直接去取，不用每次问总台。</p>
+      </div>
+
+      <p>
+        chain table 还可以有多张，比如一张给离线批处理、一张给在线服务，用的节点和 SSD 互不重叠，避免大作业把在线业务拖垮。
+        这个设计很朴素，但在生产环境里非常实用。
+      </p>
+    </section>
+
+    <section class="sec" id="craq">
+      <div class="sec-head"><span class="sec-no">04</span><h2>强一致：写走一条线，读能随便挑</h2></div>
+
+      <p>
+        一份数据存 3 个副本，马上冒出一个问题：<strong>写的时候 3 份都要改，怎么保证别人读不到「改了一半」的状态？</strong>
+        3FS 用的是 CRAQ（Chain Replication with Apportioned Queries，带查询分摊的链式复制）。
+      </p>
+
+      <p>它的核心约定只有两条：</p>
+      <ul class="clean">
+        <li><strong>写，只发给链头</strong>，然后沿链一站一站往下传，全部确认后才算成功（write-all）。</li>
+        <li><strong>读，可以发给链上任意一个副本</strong>，把读流量摊到三块盘上（read-any）。</li>
+      </ul>
+
+      <h3>写路径：像接力赛，最后一棒才交卷</h3>
+
+      <figure class="dg" id="craqFig">
+        <svg viewBox="0 0 900 420" role="img" aria-labelledby="fig3title">
+          <title id="fig3title">CRAQ 写路径：请求从链头逐跳传到链尾，ACK 再逐跳回传</title>
+          <defs>
+            <marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#4d6bfe"/>
+            </marker>
+            <marker id="c2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#d97706"/>
+            </marker>
+          </defs>
+
+          <text class="ts" x="30" y="30" font-size="10.5">客户端</text>
+          <text class="ts" x="470" y="30" text-anchor="middle" font-size="10.5">写请求 ⇒ 沿链下传</text>
+          <text class="ts" x="470" y="274" text-anchor="middle" font-size="10.5">⇐ ACK 沿链回传</text>
+
+          <!-- client -->
+          <rect class="box" x="24" y="150" width="112" height="86" rx="10" data-s="1 2 3 4"/>
+          <text class="t" x="80" y="184" text-anchor="middle" font-size="12" data-s="1 2 3 4">客户端</text>
+          <text class="ts" x="80" y="204" text-anchor="middle" data-s="1 2 3 4">write(chunk)</text>
+          <text class="ts" x="80" y="220" text-anchor="middle" data-s="1 2 3 4">+ 链版本 v7</text>
+
+          <!-- nodes -->
+          <g>
+            <rect class="accent" x="176" y="132" width="150" height="122" rx="10"/>
+            <text class="t" x="251" y="158" text-anchor="middle" font-size="12">A · head</text>
+            <text class="ts" x="251" y="180" text-anchor="middle">校验链版本</text>
+            <text class="ts" x="251" y="200" text-anchor="middle">RDMA Read 拉数据</text>
+            <text class="ts" x="251" y="220" text-anchor="middle">锁住 chunk，串行写</text>
+            <text class="tm" x="251" y="242" text-anchor="middle" data-s="2 3 4">v=5 → pending 6</text>
+          </g>
+          <g>
+            <rect class="box" x="376" y="132" width="150" height="122" rx="10"/>
+            <text class="t" x="451" y="158" text-anchor="middle" font-size="12">B · middle</text>
+            <text class="ts" x="451" y="180" text-anchor="middle">同样校验版本</text>
+            <text class="ts" x="451" y="200" text-anchor="middle">拉数据、锁 chunk</text>
+            <text class="ts" x="451" y="220" text-anchor="middle">应用更新并转发</text>
+            <text class="tm" x="451" y="242" text-anchor="middle" data-s="2 3 4">v=5 → pending 6</text>
+          </g>
+          <g>
+            <rect class="accent" x="576" y="132" width="150" height="122" rx="10"/>
+            <text class="t" x="651" y="158" text-anchor="middle" font-size="12">C · tail</text>
+            <text class="ts" x="651" y="180" text-anchor="middle">只有它敢做最终提交</text>
+            <text class="tm" x="651" y="204" text-anchor="middle" data-s="3 4">pending → committed</text>
+            <text class="ts" x="651" y="226" text-anchor="middle" data-s="3 4">然后发 ACK 给 B</text>
+          </g>
+
+          <!-- forward arrows -->
+          <line class="line-a" x1="140" y1="176" x2="170" y2="176" marker-end="url(#c1)" data-s="1 2 3 4"/>
+          <line class="line-a" x1="330" y1="176" x2="370" y2="176" marker-end="url(#c1)" data-s="2 3 4"/>
+          <line class="line-a" x1="530" y1="176" x2="570" y2="176" marker-end="url(#c1)" data-s="2 3 4"/>
+
+          <!-- ack arrows -->
+          <path class="line-r" d="M570 232 L536 232" marker-end="url(#c2)" data-s="3 4"/>
+          <path class="line-r" d="M370 232 L336 232" marker-end="url(#c2)" data-s="3 4"/>
+          <path class="line-r" d="M170 232 L140 232" marker-end="url(#c2)" data-s="4"/>
+
+          <!-- committed state row -->
+          <text class="ts" x="251" y="300" text-anchor="middle" data-s="4">committed = 6</text>
+          <text class="ts" x="451" y="300" text-anchor="middle" data-s="4">committed = 6</text>
+          <text class="ts" x="651" y="300" text-anchor="middle" data-s="3 4">committed = 6</text>
+
+          <!-- note -->
+          <text class="ts" x="251" y="376" text-anchor="middle">同一时刻，每个副本最多只有两个版本：</text>
+          <text class="tm" x="251" y="396" text-anchor="middle">已提交 v，和待提交 v+1</text>
+        </svg>
+        <div class="stepper" role="group" aria-label="CRAQ 写路径分步演示">
+          <button type="button" data-step="1" aria-pressed="true">1 发往链头</button>
+          <button type="button" data-step="2" aria-pressed="false">2 逐跳下传</button>
+          <button type="button" data-step="3" aria-pressed="false">3 链尾提交</button>
+          <button type="button" data-step="4" aria-pressed="false">4 ACK 回传</button>
+        </div>
+        <p class="step-text" id="craqText" aria-live="polite">
+          <b>第 1 步：</b>客户端把写请求发给链头 A，并带上自己认识的链版本号。版本对不上就拒绝——这是防止旧拓扑写乱数据的第一道闸门。
+        </p>
+        <figcaption><b>图 3 · 写路径。</b>写请求只走「链头 → 链尾」这一条路，同一个 chunk 的并发写在链头被串行化；数据全部落地后才逐跳 ACK 提交，中途失败可以安全重试。</figcaption>
+      </figure>
+
+      <p>
+        这套流程里有个容易被忽略的细节：<strong>请求里带的是「整块 chunk」而不是「改哪几个字节」</strong>。
+        原因在于故障恢复——节点重新上线时，前驱可以简单地用「整块覆盖写」把数据灌给它，不用回放复杂的增量日志。
+        代价是写入要先把旧 chunk 读出来、改完再写回去（copy-on-write），换来的是恢复逻辑极其简单可靠。
+      </p>
+
+      <div class="callout">
+        <span class="label">为什么写要串行</span>
+        <p>如果两个客户端同时改同一个 chunk，让三份副本各自按不同顺序应用，就会出现三份数据不一致。把并发收敛到链头一把锁上，顺序就只有一个版本，其余节点只是忠实地按顺序执行。</p>
+      </div>
+
+      <h3>读路径：三份副本都能干活</h3>
+
+      <p>
+        如果只能从链头读，那另外两份副本就纯属浪费带宽了。CRAQ 允许客户端从<strong>任意一个副本</strong>读，
+        这让读吞吐能随副本数线性增长——对「读远多于写」的 AI 训练负载，这是最划算的一笔交易。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 330" role="img" aria-labelledby="fig4title">
+          <title id="fig4title">CRAQ 读路径：客户端可以从三个副本中的任意一个读取</title>
+          <defs>
+            <marker id="d1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#4d6bfe"/>
+            </marker>
+            <marker id="d2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#059669"/>
+            </marker>
+          </defs>
+
+          <rect class="box" x="24" y="110" width="130" height="92" rx="10"/>
+          <text class="t" x="89" y="142" text-anchor="middle" font-size="12">客户端</text>
+          <text class="ts" x="89" y="162" text-anchor="middle">读 chunk 42</text>
+          <text class="ts" x="89" y="180" text-anchor="middle">随机挑一个副本</text>
+
+          <g>
+            <rect class="accent" x="260" y="30" width="200" height="82" rx="10"/>
+            <text class="t" x="360" y="56" text-anchor="middle" font-size="12">A · head</text>
+            <text class="ts" x="360" y="76" text-anchor="middle">只有 committed v</text>
+            <text class="ts" x="360" y="94" text-anchor="middle">→ 直接返回</text>
+          </g>
+          <g>
+            <rect class="accent" x="260" y="130" width="200" height="82" rx="10"/>
+            <text class="t" x="360" y="156" text-anchor="middle" font-size="12">B · middle</text>
+            <text class="ts" x="360" y="176" text-anchor="middle">同时有 committed 与 pending</text>
+            <text class="ts" x="360" y="194" text-anchor="middle">→ 返回特殊状态码</text>
+          </g>
+          <g>
+            <rect class="accent" x="260" y="230" width="200" height="82" rx="10"/>
+            <text class="t" x="360" y="256" text-anchor="middle" font-size="12">C · tail</text>
+            <text class="ts" x="360" y="276" text-anchor="middle">只有 committed v</text>
+            <text class="ts" x="360" y="294" text-anchor="middle">→ 直接返回</text>
+          </g>
+
+          <line class="line-a" x1="154" y1="132" x2="254" y2="76" marker-end="url(#d1)"/>
+          <line class="line-a" x1="154" y1="156" x2="254" y2="168" marker-end="url(#d1)"/>
+          <line class="line-a" x1="154" y1="180" x2="254" y2="262" marker-end="url(#d1)"/>
+
+          <g>
+            <rect class="soft" x="510" y="30" width="366" height="118" rx="10"/>
+            <text class="tm" x="528" y="56">情况一 · 干净</text>
+            <text class="ts" x="528" y="78">副本只持有已提交版本 → 直接返回数据。</text>
+            <text class="ts" x="528" y="98">大部分读请求都属于这一种。</text>
+          </g>
+          <g>
+            <rect class="warn" x="510" y="164" width="366" height="148" rx="10"/>
+            <text class="tm" x="528" y="190">情况二 · 正在写</text>
+            <text class="ts" x="528" y="212">副本上既有 v 又有 pending v+1，它不敢确定</text>
+            <text class="ts" x="528" y="232">v+1 是否已经在链尾提交。</text>
+            <text class="ts" x="528" y="256">客户端可以：稍等片刻重试；或者发起</text>
+            <text class="ts" x="528" y="276">relaxed read，直接读 pending 版本。</text>
+            <text class="ts" x="528" y="300">注意：3FS 不会去问链尾「提交了没」。</text>
+          </g>
+        </svg>
+        <figcaption><b>图 4 · 读路径。</b>标准 CRAQ 在遇到双版本时会向链尾查询版本；3FS 省掉了这次查询，改为客户端重试或宽松读。少一次跨节点往返，代价是偶发的读重试。</figcaption>
+      </figure>
+
+      <div class="callout analogy">
+        <span class="label">一句话理解 CRAQ</span>
+        <p><strong>写：</strong>只许从总店进货，一件件往下游门店送，最后一家签收了才算数。<strong>读：</strong>哪家店近去哪家买；如果店员正在理货，就等一下，或者拿刚上架还没盖章的那件（宽松读）。</p>
+      </div>
+
+      <p>
+        这里能看出 3FS 的取舍非常明确：<strong>牺牲写延迟，换读吞吐</strong>。写要逐跳传播，延迟比「三副本并行写」高；
+        但 AI 集群里读的量级远大于写，而且 checkpoint 这类写是超大块顺序写，对单次延迟不敏感。取舍是对着负载算过的。
+      </p>
+    </section>
+
+    <section class="sec" id="meta">
+      <div class="sec-head"><span class="sec-no">05</span><h2>元数据：无状态前台 + 一个靠谱的账本</h2></div>
+
+      <p>
+        「哪个文件有哪些 chunk、在哪些链上、权限是多少、目录里有什么」——这些叫元数据。
+        传统分布式文件系统里，元数据服务常常是最难搞的部分：它是全局单点，热点目录能把它压垮，重启一次全集群卡住。
+      </p>
+
+      <p>
+        3FS 的做法很干脆：<strong>元数据服务自己不存任何东西</strong>，所有状态写进 FoundationDB（一个支持可串行化事务的分布式 KV）。
+        于是元数据服务变成一堆完全对等的无状态进程，客户端连哪个都行，挂一个就换一个，
+        升级重启对上层几乎无感。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 400" role="img" aria-labelledby="fig5title">
+          <title id="fig5title">元数据以 INOD 与 DENT 两类键存放在 FoundationDB 中</title>
+          <defs>
+            <marker id="e1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#4d6bfe"/>
+            </marker>
+          </defs>
+
+          <!-- tree -->
+          <rect class="soft" x="22" y="40" width="228" height="230" rx="12"/>
+          <text class="t" x="136" y="68" text-anchor="middle" font-size="12">应用看到的目录树</text>
+          <line class="line" x1="52" y1="86" x2="52" y2="248"/>
+          <line class="line" x1="52" y1="110" x2="72" y2="110"/>
+          <line class="line" x1="52" y1="160" x2="72" y2="160"/>
+          <line class="line" x1="52" y1="210" x2="72" y2="210"/>
+          <line class="line" x1="72" y1="110" x2="72" y2="110"/>
+          <text class="ts" x="84" y="114" font-family="ui-monospace,monospace">/</text>
+          <text class="ts" x="84" y="164" font-family="ui-monospace,monospace">└ data/</text>
+          <text class="ts" x="84" y="214" font-family="ui-monospace,monospace">  └ a.parquet</text>
+          <line class="line" x1="52" y1="160" x2="52" y2="160"/>
+          <text class="ts" x="136" y="258" text-anchor="middle">rename / 递归删除 / 软链接</text>
+
+          <!-- meta services -->
+          <rect class="accent" x="300" y="96" width="150" height="150" rx="12"/>
+          <text class="t" x="375" y="126" text-anchor="middle" font-size="12">元数据服务</text>
+          <rect class="box" x="318" y="140" width="114" height="26" rx="6"/>
+          <text class="ts" x="375" y="158" text-anchor="middle">stateless</text>
+          <rect class="box" x="318" y="174" width="114" height="26" rx="6"/>
+          <text class="ts" x="375" y="192" text-anchor="middle">stateless</text>
+          <rect class="box" x="318" y="208" width="114" height="26" rx="6"/>
+          <text class="ts" x="375" y="226" text-anchor="middle">stateless</text>
+
+          <line class="line-a" x1="256" y1="152" x2="294" y2="152" marker-end="url(#e1)"/>
+          <text class="ts" x="275" y="142" text-anchor="middle" font-size="10">open</text>
+
+          <line class="line-a" x1="452" y1="170" x2="496" y2="170" marker-end="url(#e1)"/>
+          <text class="ts" x="474" y="160" text-anchor="middle" font-size="10">事务</text>
+
+          <!-- FDB -->
+          <rect class="soft" x="500" y="40" width="378" height="230" rx="12"/>
+          <text class="t" x="689" y="68" text-anchor="middle" font-size="12">FoundationDB（按 key 排序的 KV）</text>
+          <rect class="box" x="518" y="86" width="342" height="40" rx="6"/>
+          <text class="ts" x="532" y="111" font-family="ui-monospace,monospace" font-size="11">INOD | 0x…2a → 文件属性 / 长度 / 布局</text>
+          <rect class="box" x="518" y="134" width="342" height="40" rx="6"/>
+          <text class="ts" x="532" y="159" font-family="ui-monospace,monospace" font-size="11">INOD | 0x…2b → 目录属性 / 父目录</text>
+          <rect class="accent" x="518" y="182" width="342" height="40" rx="6"/>
+          <text class="ts" x="532" y="207" font-family="ui-monospace,monospace" font-size="11">DENT | 0x…2b | "a.parquet" → 0x…2a</text>
+          <rect class="accent" x="518" y="230" width="342" height="26" rx="6"/>
+          <text class="ts" x="532" y="248" font-family="ui-monospace,monospace" font-size="11">DENT | 0x…2b | "b.parquet" → 0x…2c</text>
+          <text class="tm" x="689" y="286" text-anchor="middle">同目录的 DENT 天然连成一段连续 key</text>
+
+          <!-- annotation -->
+          <rect class="warn" x="22" y="300" width="856" height="72" rx="10"/>
+          <text class="ts" x="40" y="326">inode ID 是全局唯一、单调递增的 64 位整数，并且<tspan font-weight="700">小端编码</tspan>——这样连续的 inode 会散到 FDB 的不同节点，不会全挤在一台机器上。</text>
+          <text class="ts" x="40" y="352">列目录（readdir）就是对这个目录的 DENT 前缀做一次<tspan font-weight="700">范围扫描</tspan>，天然高效，不需要额外索引。</text>
+        </svg>
+        <figcaption><b>图 5 · 元数据的 KV 形态。</b>文件系统语义（目录、链接、rename）被翻译成对两类 key 的事务操作；并发控制、冲突重试交给 FDB，元数据服务只做翻译。</figcaption>
+      </figure>
+
+      <p>
+        FDB 的事务会记录读写键集做冲突检测，冲突了元数据服务自动重试。于是几个经典难题被「下沉」掉了：
+        多客户端同时改一个目录、rename 时检测目录成环、并发创建同名文件——都由事务模型兜底，不用自己写一套分布式锁。
+      </p>
+
+      <h3>几个为规模做的「小动作」</h3>
+      <p>这些细节不起眼，但正是它们让系统在几千个客户端下还能跑：</p>
+      <ul class="clean">
+        <li><strong>只读 fd 不跟踪。</strong>训练任务一启动就打开几十万个文件，如果每个 fd 都在元数据里登记，FDB 会被压垮。反正训练不依赖「删除已打开文件要延迟」这个语义，干脆不记。</li>
+        <li><strong>写 fd 记 session。</strong>写模式下打开的文件会登记会话，删除要等所有 fd 关闭，避免并发写产生永远回收不了的垃圾块；客户端掉线后，元数据服务定期清理它的会话。</li>
+        <li><strong>文件长度允许暂时不准。</strong>活跃写入时，客户端每 5 秒上报一次最大写位置，取个近似值；到 close/fsync 时才去问存储服务「最后一个 chunk 到底多长」，拿到精确值。</li>
+        <li><strong>stripe 用 200，但只查用到的那几条链。</strong>生产环境 stripe 很大，小文件其实只落在少数链上。inode 里存一个「可能用到的链数」提示，初始 16，每次写更多链就翻倍，避免为了算长度把 200 条链全问一遍。</li>
+        <li><strong>长度更新按 inode 哈希分摊。</strong>多个元数据服务同时更新同一个文件的长度会撞事务，用 inode ID 做一致性哈希，把这类任务分派到不同进程。</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="label">代价</span>
+        <p>元数据要经过「元数据服务 → FDB → 元数据服务」两跳，小文件密集或海量 stat 的场景延迟不如专用 MDS。这是 3FS 主动接受的结果：它面向的是大文件、高吞吐，不是海量小文件。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="client">
+      <div class="sec-head"><span class="sec-no">06</span><h2>客户端：一条兼容路，一条性能路</h2></div>
+
+      <p>
+        文件系统再好，应用接不进来也白搭。3FS 提供了两种客户端，对应两种心态：<strong>先把业务跑起来</strong>，和<strong>把最后一点性能榨出来</strong>。
+      </p>
+
+      <h3>FUSE 客户端：开箱即用，但有天花板</h3>
+      <p>
+        FUSE 让用户态进程实现一个文件系统，应用完全感知不到差别——<span class="kbd">ls</span>、<span class="kbd">open</span>、<span class="kbd">read</span> 都照常。
+        门槛极低，但代价藏在两处：
+      </p>
+      <ul class="clean">
+        <li><strong>两次内存拷贝。</strong>用户态守护进程读不到应用的内存，数据必须先从内核拷到守护进程，再拷回去。带宽白白烧在内存总线上。</li>
+        <li><strong>一把自旋锁。</strong>请求要经过内核里一个共享队列，队列由自旋锁保护。并发一高就全在抢锁，加线程没用。官方实测大约 <strong>每秒 40 万次 4KiB 读</strong>就到顶了，<span class="kbd">perf</span> 显示 CPU 大量耗在内核自旋锁上。</li>
+      </ul>
+      <p>
+        另外 Linux 5.x 的 FUSE 不支持同一文件并发写，应用只能靠「同时写多个文件」来堆吞吐——这对 checkpoint 场景恰好可行。
+      </p>
+
+      <h3>原生客户端：借 io_uring 的思路做零拷贝</h3>
+      <p>
+        理想方案是写内核模块，但内核模块难开发、难调试，出问题可能直接死机，升级还得停掉所有使用该文件系统的进程。
+        3FS 选择了折中：<strong>把原生客户端放进 FUSE 守护进程里</strong>。元数据操作（open/close/stat）仍走 FUSE，
+        保证语义和 POSIX 一致；数据 I/O 则走一套共享内存 + 环形队列的 API。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 360" role="img" aria-labelledby="fig6title">
+          <title id="fig6title">FUSE 客户端的数据拷贝路径与原生客户端零拷贝路径对比</title>
+          <defs>
+            <marker id="f1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#4d6bfe"/>
+            </marker>
+          </defs>
+
+          <rect class="soft" x="20" y="34" width="410" height="290" rx="12"/>
+          <text class="t" x="225" y="60" text-anchor="middle" font-size="12.5">FUSE 路径：能跑，但拷贝两次</text>
+
+          <rect class="box" x="44" y="82" width="150" height="54" rx="8"/>
+          <text class="ts" x="119" y="106" text-anchor="middle">应用内存</text>
+          <text class="ts" x="119" y="122" text-anchor="middle" font-size="10">buffer</text>
+
+          <rect class="box" x="44" y="166" width="150" height="54" rx="8"/>
+          <text class="ts" x="119" y="190" text-anchor="middle">内核 FUSE 队列</text>
+          <text class="ts" x="119" y="206" text-anchor="middle" font-size="10">自旋锁保护</text>
+
+          <rect class="box" x="250" y="166" width="156" height="54" rx="8"/>
+          <text class="ts" x="328" y="190" text-anchor="middle">用户态守护进程</text>
+          <text class="ts" x="328" y="206" text-anchor="middle" font-size="10">hf3fs_fuse</text>
+
+          <rect class="accent" x="250" y="82" width="156" height="54" rx="8"/>
+          <text class="ts" x="328" y="106" text-anchor="middle">RDMA 发往存储</text>
+          <text class="ts" x="328" y="122" text-anchor="middle" font-size="10">数据从内核再拷一次</text>
+
+          <line class="line-a" x1="119" y1="138" x2="119" y2="162" marker-end="url(#f1)"/>
+          <line class="line-a" x1="198" y1="193" x2="246" y2="193" marker-end="url(#f1)"/>
+          <line class="line-a" x1="328" y1="162" x2="328" y2="140" marker-end="url(#f1)"/>
+
+          <text class="tm" x="129" y="154" font-size="10">拷贝 ①</text>
+          <text class="tm" x="222" y="186" text-anchor="middle" font-size="10">拷贝 ②</text>
+          <text class="ts" x="225" y="258" text-anchor="middle">约 40 万次/秒 4KiB 读 · 并发上不去</text>
+          <text class="ts" x="225" y="282" text-anchor="middle">好处：POSIX 兼容，代码零改动</text>
+
+          <rect class="soft" x="460" y="34" width="420" height="290" rx="12"/>
+          <text class="t" x="670" y="60" text-anchor="middle" font-size="12.5">原生路径：共享内存，零拷贝</text>
+
+          <rect class="box" x="484" y="82" width="160" height="54" rx="8"/>
+          <text class="ts" x="564" y="106" text-anchor="middle">应用进程</text>
+          <text class="ts" x="564" y="122" text-anchor="middle" font-size="10">open() 仍走 FUSE</text>
+
+          <rect class="accent" x="484" y="166" width="160" height="78" rx="8"/>
+          <text class="ts" x="564" y="190" text-anchor="middle">共享内存 Iov</text>
+          <text class="ts" x="564" y="208" text-anchor="middle" font-size="10">+ 环形队列 Ior</text>
+          <text class="ts" x="564" y="226" text-anchor="middle" font-size="10">内存已注册给 RDMA</text>
+
+          <rect class="box" x="700" y="166" width="156" height="78" rx="8"/>
+          <text class="ts" x="778" y="196" text-anchor="middle">原生客户端</text>
+          <text class="ts" x="778" y="214" text-anchor="middle" font-size="10">批量出队执行</text>
+
+          <rect class="accent" x="700" y="82" width="156" height="54" rx="8"/>
+          <text class="ts" x="778" y="106" text-anchor="middle">RDMA 直读</text>
+          <text class="ts" x="778" y="122" text-anchor="middle" font-size="10">数据落进 Iov</text>
+
+          <line class="line-a" x1="564" y1="138" x2="564" y2="162" marker-end="url(#f1)"/>
+          <line class="line-a" x1="648" y1="205" x2="696" y2="205" marker-end="url(#f1)"/>
+          <line class="line-a" x1="778" y1="162" x2="778" y2="140" marker-end="url(#f1)"/>
+          <text class="tm" x="672" y="197" text-anchor="middle" font-size="10">零拷贝</text>
+          <text class="ts" x="670" y="292" text-anchor="middle">异步 + 批量 · 小读请求不再被 RPC 放大</text>
+        </svg>
+        <figcaption><b>图 6 · 两条客户端路径。</b>原生客户端把数据缓冲区（Iov）和请求队列（Ior）都放在共享内存里，应用入队、客户端出队，读到的数据直接落在应用可访问的内存中，省掉两次拷贝。</figcaption>
+      </figure>
+
+      <p>
+        Iov 是一大块应用和客户端共享的内存，提前注册给 RDMA 网卡，所以网卡可以直接往里写；Ior 是一个小环形队列，
+        用法类似 <span class="kbd">io_uring</span>：应用把请求塞进环里，客户端批量取走、批量发出，把「小读请求」的 RPC 开销摊薄。
+        多线程应用最好每个线程一个环，共享一个环反而要加同步。
+      </p>
+
+      <div class="callout">
+        <span class="label">怎么选</span>
+        <p>数据准备、跑批、已有代码不想改 → FUSE 客户端。<br>训练 dataloader、推理 KVCache 这类对 IOPS 和延迟敏感、愿意改几行代码的 → 原生客户端。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="failure">
+      <div class="sec-head"><span class="sec-no">07</span><h2>故障不是意外，是日常</h2></div>
+
+      <p>
+        几千块 SSD、几百台机器，<strong>每时每刻都有东西在坏</strong>。3FS 的设计前提是：坏盘、宕机、网络分区都会发生，
+        系统要在这些情况下继续提供接近满血的吞吐，而不是「先降级跑着，等运维换盘」。
+      </p>
+
+      <h3>第一道防线：心跳即租约</h3>
+      <p>
+        存储和元数据服务持续向主集群管理器上报。超过 T 秒（默认 60s）没消息，管理器判定它失联；
+        反过来，服务如果超过 <strong>T/2</strong> 秒联系不上管理器，就<strong>主动退出</strong>。
+      </p>
+      <p>
+        后半句很关键：它防的是「脑裂」。网络一断，某个服务可能还活着，但已经收不到最新拓扑了；
+        如果它继续对外服务，客户端会拿到过期信息写出脏数据。宁可自杀，也不当僵尸。
+      </p>
+
+      <h3>第二道防线：target 状态机</h3>
+      <p>每个 target 有一个公开状态，随链信息一起广播给所有客户端：</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>状态</th><th>能读</th><th>能写</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>serving</code></td><td>✓</td><td>✓</td><td>活着，正常服务</td></tr>
+            <tr><td><code>syncing</code></td><td>✗</td><td>✓</td><td>活着，正在从上游同步数据</td></tr>
+            <tr><td><code>waiting</code></td><td>✗</td><td>✗</td><td>活着，但还没开始恢复</td></tr>
+            <tr><td><code>lastsrv</code></td><td>✗</td><td>✗</td><td>已宕机，且曾是链上最后一个在服务的节点</td></tr>
+            <tr><td><code>offline</code></td><td>✗</td><td>✗</td><td>宕机或介质故障</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        节点被标 <code>offline</code> 后会被<strong>移到链尾</strong>，链版本号 +1，新拓扑广播出去。
+        挪到链尾而不是直接踢掉，是为了让写流程还能找到一个「兜底的尾巴」，不至于整条链停摆。
+      </p>
+
+      <h3>第三道防线：恢复时别把邻居压死</h3>
+      <p>
+        这是我觉得 3FS 最见功力的一处。假设 3 副本的链是 <code>A-B-C</code>，A 的 SSD 挂了，读请求自然落到 B 和 C 身上。
+        问题来了：如果拓扑是「A 只和 B、C 配对」，那 B、C 要各自多扛 A 的一半流量，<strong>瞬间翻倍</strong>，直接成为新瓶颈。
+        而换盘、同步数据可能要几个小时——这几个小时里整个集群的读带宽就被拖垮了。
+      </p>
+
+      <div class="panels">
+        <div class="panel">
+          <h4>朴素布局：A 只和 B、C 配对</h4>
+          <div class="sub">A 一挂，B、C 各多扛 100% 流量</div>
+          <div class="chain"><span class="lab">链1</span><span class="chip fail">A1</span><span class="chip hot">B1 +100%</span><span class="chip hot">C1 +100%</span></div>
+          <div class="chain"><span class="lab">链2</span><span class="chip fail">A2</span><span class="chip hot">B2 +100%</span><span class="chip hot">C2 +100%</span></div>
+          <div class="chain"><span class="lab">链3</span><span class="chip fail">A3</span><span class="chip hot">B3 +100%</span><span class="chip hot">C3 +100%</span></div>
+          <div class="chain"><span class="lab">链4</span><span class="chip fail">A4</span><span class="chip hot">B4 +100%</span><span class="chip hot">C4 +100%</span></div>
+          <div class="chain"><span class="lab">链5</span><span class="chip fail">A5</span><span class="chip hot">B5 +100%</span><span class="chip hot">C5 +100%</span></div>
+          <p class="panels-note">B、C 被瞬间打满，集群读吞吐掉一大截，直到新盘同步完。</p>
+        </div>
+        <div class="panel">
+          <h4>均衡布局：A 和每块 SSD 都配对</h4>
+          <div class="sub">A 一挂，其余 5 块各多扛 20%</div>
+          <div class="chain"><span class="lab">链1</span><span class="chip fail">A1</span><span class="chip hot">B2 +20%</span><span class="chip cool">E1</span></div>
+          <div class="chain"><span class="lab">链2</span><span class="chip fail">A2</span><span class="chip hot">C1 +20%</span><span class="chip cool">F1</span></div>
+          <div class="chain"><span class="lab">链3</span><span class="chip fail">A3</span><span class="chip hot">D2 +20%</span><span class="chip cool">B3</span></div>
+          <div class="chain"><span class="lab">链4</span><span class="chip fail">A4</span><span class="chip hot">E2 +20%</span><span class="chip cool">C3</span></div>
+          <div class="chain"><span class="lab">链5</span><span class="chip fail">A5</span><span class="chip hot">F2 +20%</span><span class="chip cool">D3</span></div>
+          <p class="panels-note">每块盘只多担一点点，恢复期间仍接近满速。这是用整数规划求解的「平衡不完全区组设计」。</p>
+        </div>
+      </div>
+
+      <p>
+        为了让「故障中仍可用」成为一等目标，3FS 把链的构造当成了一个组合数学问题：
+        让每块 SSD 在链里尽量和所有其他 SSD 都搭档过，这样任何一块挂掉，压力都能被均摊。
+        这已经不是「实现一个文件系统」的层面了，是拿运筹学在做工程。
+      </p>
+
+      <h3>数据怎么补回来</h3>
+      <p>
+        节点重新上线后，它会先把自己所有 target 都标成 offline，确保走完恢复流程，然后才开始收心跳。恢复过程与正常读写<strong>重叠进行</strong>，不阻塞业务：
+      </p>
+      <ul class="clean">
+        <li>前驱向它发 <code>dump-chunkmeta</code>，它把本地所有 chunk 的 ID、链版本、committed/pending 版本号回给对方。</li>
+        <li>前驱对比两份 chunk 元数据，决定哪些该传、哪些该删。</li>
+        <li>需要补的 chunk，逐个加锁、读出「链版本 + 提交版本 + 完整数据」，以<strong>整块覆盖写</strong>推过去。</li>
+        <li>全部推完发 <code>sync-done</code>，它把本地状态置为 up-to-date，重新开始对外读服务。</li>
+      </ul>
+      <p>
+        判断规则也很克制：本地有远端没有 → 补；远端有本地没有 → 删；本地链版本更新 → 补；
+        版本相同但提交号对不上 → 补；其余情况视为「一致」或「正在被写」，不动。
+      </p>
+    </section>
+
+    <section class="sec" id="perf">
+      <div class="sec-head"><span class="sec-no">08</span><h2>跑分，以及它不适合做什么</h2></div>
+
+      <p>官方 README 给了三组数字，都是真实集群、带背景流量跑出来的：</p>
+
+      <div class="stats">
+        <div class="stat"><div class="n">6.6<small>TiB/s</small></div><div class="d">180 个存储节点、500+ 客户端聚合读吞吐，且训练任务仍在跑</div></div>
+        <div class="stat"><div class="n">3.66<small>TiB/min</small></div><div class="d">GraySort：110.5 TiB 数据、8192 分区，30 分 14 秒排完</div></div>
+        <div class="stat"><div class="n">40<small>GiB/s</small></div><div class="d">推理 KVCache 客户端读峰值，同时还在做垃圾回收</div></div>
+      </div>
+
+      <p class="muted" style="font-size:14px">
+        测试条件：单节点 2×200Gbps InfiniBand、16 块 14TiB NVMe；GraySort 用 25 个存储节点 + 50 个计算节点。这些是特定硬件与负载下的数字，不能直接和别的系统横向比。
+      </p>
+
+      <h3>它明确放弃的东西</h3>
+      <p>理解一个系统，看它不做什么比看它做什么更有信息量：</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>场景</th><th>3FS 的表现</th><th>原因</th></tr></thead>
+          <tbody>
+            <tr><td>海量小文件、频繁 stat</td><td>不擅长</td><td>元数据要过 FDB 两跳，且无专用 MDS 缓存层</td></tr>
+            <tr><td>写多读少</td><td>不划算</td><td>CRAQ 写要逐跳传播，延迟高于并行三写</td></tr>
+            <tr><td>需要完整 POSIX 语义</td><td>部分缺失</td><td>文件锁、xattr 等未支持</td></tr>
+            <tr><td>跨地域 / 公网访问</td><td>不适用</td><td>假设集群内 RDMA 网络，低延迟高带宽</td></tr>
+            <tr><td>没有 RDMA 的环境</td><td>部署困难</td><td>设计处处假设 RDMA，普通以太网发挥不出优势</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <span class="label">值得记住的一个判断</span>
+        <p>3FS 在生产环境里<strong>端到端不做缓存</strong>。在「全闪存 + RDMA」的时代，中间再加一层 DRAM 缓存，可能不但省不了时间，反而变成新的瓶颈和故障点。数据从 NVMe 直接经网卡送到客户端内存——前提是你的网络足够快。这是一个非常依赖硬件前提的赌注，也是一次很清醒的取舍。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="summary">
+      <div class="sec-head"><span class="sec-no">09</span><h2>一页总结：六条核心思想</h2></div>
+
+      <div class="summary">
+        <h3>如果只记六句话</h3>
+        <ol>
+          <li><strong>控制面与数据面分离。</strong>元数据走「无状态服务 + FDB」，数据走「客户端直连存储」，两条路互不拖累。</li>
+          <li><strong>位置无关。</strong>文件切成 chunk 条带化到很多链上，应用不需要关心数据在哪，聚合带宽才能线性增长。</li>
+          <li><strong>读写不对称优化。</strong>写收敛到链头串行、逐跳提交换取强一致；读摊到所有副本，换满带宽。因为 AI 负载读远多于写。</li>
+          <li><strong>状态放在最靠谱的地方。</strong>文件语义、目录并发、rename 成环这些难题，全都下沉给 FoundationDB 的事务模型。</li>
+          <li><strong>把故障当常态设计。</strong>心跳即租约、失联就自杀防脑裂、链布局用组合设计保证「坏一块盘」时流量均摊。</li>
+          <li><strong>用成熟接口降低迁移成本。</strong>POSIX 文件语义 + FUSE 客户端让存量代码零改动；想更快再上零拷贝原生 API。</li>
+        </ol>
+      </div>
+
+      <p>
+        回过头看，3FS 并没有什么玄乎的黑科技。它的厉害之处在于：<strong>每一个设计选择都指向同一个目标</strong>——
+        让几千张 GPU 同时、稳定、可预测地从一堆 SSD 上取数据。为此它可以接受写延迟高一点、小文件慢一点、部署门槛高一点。
+      </p>
+
+      <p>
+        这也是读大型开源系统最有意思的地方：你看到的不是一堆技术的堆砌，而是一连串<strong>有代价的取舍</strong>。
+        把代价看清楚，比记住架构图更有用。
+      </p>
+    </section>
+
+  </article>
+</div>
+
+<footer class="footer">
+  <h4>参考</h4>
+  <ul>
+    <li><a href="https://github.com/deepseek-ai/3FS" target="_blank" rel="noopener">deepseek-ai/3FS · GitHub 仓库</a></li>
+    <li><a href="https://github.com/deepseek-ai/3FS/blob/main/README.md" target="_blank" rel="noopener">README.md · 设计目标与性能数据</a></li>
+    <li><a href="https://github.com/deepseek-ai/3FS/blob/main/docs/design_notes.md" target="_blank" rel="noopener">docs/design_notes.md · 架构与实现细节（本文技术依据）</a></li>
+    <li><a href="https://github.com/deepseek-ai/3FS/blob/main/deploy/README.md" target="_blank" rel="noopener">deploy/README.md · 部署指南</a></li>
+  </ul>
+  <p>本文为面向初学者的技术解读，架构描述依据官方文档；涉及性能与取舍的评述部分带有个人的理解与简化，细节请以源码与官方文档为准。</p>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* progress bar */
+  var bar = document.getElementById('progress');
+  function onScroll(){
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    var p = max > 0 ? (h.scrollTop || document.body.scrollTop) / max : 0;
+    bar.style.width = Math.min(100, Math.max(0, p * 100)) + '%';
+  }
+  document.addEventListener('scroll', onScroll, {passive:true});
+  window.addEventListener('resize', onScroll);
+  onScroll();
+
+  /* theme */
+  var root = document.documentElement;
+  var btn = document.getElementById('themeBtn');
+  var saved = null;
+  try { saved = localStorage.getItem('fs3-theme'); } catch(e){}
+  if (saved) root.setAttribute('data-theme', saved);
+  else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) root.setAttribute('data-theme','dark');
+  btn.addEventListener('click', function(){
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('fs3-theme', next); } catch(e){}
+  });
+
+  /* TOC active state */
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function(a){ return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+  function setActive(id){
+    links.forEach(function(a){
+      a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+    });
+  }
+  if ('IntersectionObserver' in window && sections.length){
+    var io = new IntersectionObserver(function(entries){
+      var visible = entries.filter(function(e){ return e.isIntersecting; });
+      if (visible.length){
+        visible.sort(function(a,b){ return a.boundingClientRect.top - b.boundingClientRect.top; });
+        setActive(visible[0].target.id);
+      }
+    }, {rootMargin:'-15% 0px -70% 0px', threshold:0});
+    sections.forEach(function(s){ io.observe(s); });
+  }
+
+  /* CRAQ stepper */
+  var fig = document.getElementById('craqFig');
+  var textEl = document.getElementById('craqText');
+  if (fig && textEl){
+    var texts = {
+      1: '<b>第 1 步：</b>客户端把写请求发给链头 A，并带上自己认识的链版本号。版本对不上就拒绝——这是防止旧拓扑写乱数据的第一道闸门。',
+      2: '<b>第 2 步：</b>A 校验版本、用 RDMA Read 把数据拉到本地、锁住这个 chunk，读出已提交版本 v，把「v + 这次修改」存成 pending v+1，然后转发给 B。B 重复同样的动作，再转给 C。',
+      3: '<b>第 3 步：</b>C 是链尾。它把 pending 原子地替换成 committed，这时数据才算真正提交，然后回一个 ACK 给 B。',
+      4: '<b>第 4 步：</b>ACK 沿链反向回传，B、A 依次提交并释放锁，最后回到客户端。任何瞬间，每个副本上最多只有「已提交 v」和「待提交 v+1」两个版本。'
+    };
+    var items = fig.querySelectorAll('[data-s]');
+    var btns = fig.querySelectorAll('.stepper button');
+    var current = 1, timer = null;
+
+    function render(step){
+      current = step;
+      items.forEach(function(el){
+        var list = (el.getAttribute('data-s') || '').split(' ');
+        el.classList.toggle('on', list.indexOf(String(step)) !== -1);
+      });
+      btns.forEach(function(b){
+        b.setAttribute('aria-pressed', b.getAttribute('data-step') === String(step) ? 'true' : 'false');
+      });
+      textEl.innerHTML = texts[step];
+    }
+
+    btns.forEach(function(b){
+      b.addEventListener('click', function(){
+        var s = parseInt(b.getAttribute('data-step'), 10);
+        render(s);
+      });
+    });
+
+    render(1);
+
+    /* auto-play once when the figure first scrolls into view */
+    var played = false;
+    if ('IntersectionObserver' in window){
+      var io2 = new IntersectionObserver(function(entries){
+        entries.forEach(function(en){
+          if (en.isIntersecting && !played){
+            played = true;
+            var s = 1;
+            timer = setInterval(function(){
+              s++;
+              if (s > 4){ clearInterval(timer); timer = null; return; }
+              render(s);
+            }, 1400);
+            io2.disconnect();
+          }
+        });
+      }, {threshold:.45});
+      io2.observe(fig);
+    }
+  }
+})();
+</script>
+</body>
+</html>
