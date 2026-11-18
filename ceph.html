@@ -195,6 +195,15 @@
   .summary ol{margin:0 0 20px;padding-left:1.2em}
   .summary li{margin-bottom:10px}
 
+  .related{margin:40px 0 0;padding:18px 22px 14px;border:1px solid var(--line);border-radius:14px;
+    background:var(--card);box-shadow:var(--shadow)}
+  .related h4{margin:0 0 4px;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--muted);font-weight:700}
+  .related a{display:block;padding:12px 0 10px;border-bottom:none}
+  .related a:hover .rt{color:var(--accent)}
+  .related .rt{display:block;font-size:16px;font-weight:700;color:var(--ink)}
+  .related .rd{display:block;font-size:13.5px;line-height:1.6;color:var(--muted);margin-top:3px}
+
   .footer{max-width:1120px;margin:20px auto 0;padding:36px 24px 70px;border-top:1px solid var(--line);
     color:var(--muted);font-size:13.5px;line-height:1.8}
   .footer h4{color:var(--ink);font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 10px}
@@ -1028,6 +1037,14 @@ ceph osd set norecover</code></pre>
         撑住了「对象、块、文件」三种完全不同的用法，并且能在同一批硬件上跑十年。理解了 CRUSH 和 PG，这套系统就不再神秘了。
       </p>
     </section>
+
+    <aside class="related">
+      <h4>相关阅读</h4>
+      <a href="./">
+        <span class="rt">3FS 图解：把上万块 SSD 变成一块超级硬盘 →</span>
+        <span class="rd">另一条路线：放弃 CRUSH 与通用性，改用无状态元数据服务 + FoundationDB，为 AI 训练的吞吐做极致取舍。</span>
+      </a>
+    </aside>
 
   </article>
 </div>
