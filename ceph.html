@@ -1,0 +1,1169 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ceph 图解：一个集群，三种存储</title>
+<meta name="description" content="面向零基础读者的 Ceph 架构科普：RADOS、OSD、PG、CRUSH、副本与纠删码、CephFS 与 RGW，以及扩容、自愈和运维里真正会疼的地方。">
+<meta name="theme-color" content="#120b08">
+<link rel="canonical" href="https://super-ljg.github.io/blog/ceph.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Ceph 图解：一个集群，三种存储">
+<meta property="og:description" content="用七张图讲清 Ceph 的 RADOS、PG、CRUSH、副本与纠删码，以及扩容、自愈和运维里真正会疼的地方。">
+<meta property="og:url" content="https://super-ljg.github.io/blog/ceph.html">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Ceph 图解：一个集群，三种存储">
+<meta name="twitter:description" content="用七张图讲清 Ceph 的架构与取舍。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23c94b23'/%3E%3Ctext x='32' y='43' font-family='Helvetica,Arial,sans-serif' font-size='24' font-weight='700' fill='white' text-anchor='middle'%3ECeph%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    color-scheme: light;
+    --bg:#fbfaf9; --bg-soft:#f5f3f1; --card:#ffffff;
+    --ink:#191512; --ink-2:#413a35; --muted:#6b625c;
+    --line:#e8e3df; --line-strong:#d4ccc6;
+    --accent:#c94b23; --accent-2:#a53a17; --accent-soft:#fff3ed;
+    --amber:#a86a00; --amber-soft:#fff8ea; --amber-line:#f3ddb0;
+    --green:#0f766e; --green-soft:#ecfdf5;
+    --red:#b3261e; --red-soft:#fdf1f0;
+    --shadow:0 1px 2px rgba(40,20,10,.05),0 8px 24px rgba(40,20,10,.06);
+    --mono: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans: -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --s-box:#ffffff; --s-box-soft:#faf7f5; --s-box-accent:#fff2ec; --s-box-warn:#fff8ea; --s-box-green:#ecfdf5;
+    --s-stroke:#e2dbd5; --s-stroke-accent:#f3c3ad; --s-stroke-warn:#f0d9ab;
+    --s-t:#221c18; --s-ts:#6b625c; --s-tm:#b8431e;
+    --s-line:#cbc2bb; --s-line-d:#bdb3ab;
+  }
+  [data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#100d0b; --bg-soft:#1a1512; --card:#181310;
+    --ink:#f0e9e4; --ink-2:#cbc1ba; --muted:#968a82;
+    --line:#2a221d; --line-strong:#3a2f28;
+    --accent:#ff9a70; --accent-2:#ffb897; --accent-soft:#2b1a12;
+    --amber:#e5b168; --amber-soft:#241c10; --amber-line:#3f3018;
+    --green:#5dd6c0; --green-soft:#0e2624;
+    --red:#f0918a; --red-soft:#2a1312;
+    --shadow:0 1px 2px rgba(0,0,0,.45),0 10px 30px rgba(0,0,0,.4);
+    --s-box:#1d1713; --s-box-soft:#191410; --s-box-accent:#2b1a12; --s-box-warn:#241c10; --s-box-green:#0e2624;
+    --s-stroke:#332a24; --s-stroke-accent:#57301f; --s-stroke-warn:#3f3018;
+    --s-t:#f0e9e4; --s-ts:#a3978f; --s-tm:#ffab84;
+    --s-line:#3b312a; --s-line-d:#4a3d35;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:17px;line-height:1.85;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+  a:hover{border-bottom-color:var(--accent)}
+  ::selection{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+
+  #progress{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#c94b23,#f2a37c);z-index:100;transition:width .1s linear}
+  .theme-toggle{position:fixed;top:18px;right:20px;z-index:90;width:40px;height:40px;border-radius:50%;
+    border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;font-size:16px;
+    box-shadow:var(--shadow);display:grid;place-items:center}
+
+  .hero{position:relative;overflow:hidden;color:#f6efe9;
+    background:radial-gradient(1100px 480px at 12% -10%,#7a2f14 0%,transparent 58%),
+               radial-gradient(900px 460px at 88% 0%,#5c1f2e 0%,transparent 55%),
+               linear-gradient(160deg,#120b08 0%,#1c110c 55%,#0f0a07 100%);
+    padding:76px 24px 66px}
+  .hero::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.55;
+    background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+    background-size:52px 52px;
+    mask-image:radial-gradient(80% 70% at 50% 30%,#000 20%,transparent 75%)}
+  .hero-inner{max-width:1080px;margin:0 auto;position:relative;z-index:1}
+  .eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:12.5px;letter-spacing:.14em;
+    text-transform:uppercase;color:#ffb797;border:1px solid rgba(255,183,151,.35);
+    padding:6px 12px;border-radius:999px;background:rgba(255,183,151,.08)}
+  .hero h1{font-size:clamp(30px,4.6vw,52px);line-height:1.22;margin:22px 0 16px;letter-spacing:-.02em;font-weight:800}
+  .hero h1 em{font-style:normal;background:linear-gradient(90deg,#ffb18c,#ffd9a0);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{font-size:clamp(15px,1.6vw,18.5px);line-height:1.85;color:#c9bab1;max-width:760px;margin:0}
+  .hero-meta{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:30px;font-size:13.5px;color:#9c8b80}
+  .hero-meta b{color:#eadfd6;font-weight:600}
+  .hero-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:26px}
+  .hero-tags span{font-size:12.5px;color:#d6c7bd;border:1px solid rgba(255,255,255,.14);padding:4px 10px;border-radius:6px;background:rgba(255,255,255,.04)}
+
+  .layout{max-width:1120px;margin:0 auto;padding:56px 24px 40px;display:grid;
+    grid-template-columns:212px minmax(0,1fr);gap:64px;align-items:start}
+  .toc{position:sticky;top:26px;font-size:13.5px;line-height:1.6}
+  .toc h4{margin:0 0 12px;font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .toc ol{list-style:none;margin:0;padding:0;border-left:1px solid var(--line)}
+  .toc a{display:block;padding:6px 0 6px 14px;margin-left:-1px;border-left:2px solid transparent;
+    border-bottom:none;color:var(--muted)}
+  .toc a:hover{color:var(--ink)}
+  .toc a.active{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+  article{min-width:0;max-width:780px}
+
+  h2{font-size:clamp(23px,2.6vw,30px);line-height:1.35;letter-spacing:-.015em;margin:0 0 18px;font-weight:750}
+  h3{font-size:19px;line-height:1.5;margin:38px 0 12px;font-weight:700}
+  h4{font-size:16px;margin:26px 0 8px;font-weight:700;color:var(--ink)}
+  p{margin:0 0 18px}
+  .sec{padding-top:58px;scroll-margin-top:24px}
+  .sec:first-of-type{padding-top:8px}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+  .sec-no{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--accent);font-weight:700;padding-top:4px}
+  .sec-head h2{margin:0}
+  strong{font-weight:700;color:var(--ink)}
+  .muted{color:var(--muted)}
+  .kbd{font-family:var(--mono);font-size:.88em;background:var(--bg-soft);border:1px solid var(--line);
+    border-radius:4px;padding:1px 5px;color:var(--ink-2)}
+  ul.clean{margin:0 0 20px;padding-left:1.15em}
+  ul.clean li{margin-bottom:9px}
+  ul.clean li::marker{color:var(--accent)}
+
+  .callout{position:relative;margin:26px 0;padding:17px 20px 15px 22px;border-radius:12px;
+    background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 22%,transparent);font-size:16px}
+  .callout .label{display:block;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;
+    font-weight:800;color:var(--accent);margin-bottom:6px}
+  .callout p:last-child{margin-bottom:0}
+  .callout.analogy{background:var(--amber-soft);border-color:var(--amber-line)}
+  .callout.analogy .label{color:var(--amber)}
+  .callout.warn{background:var(--red-soft);border-color:color-mix(in srgb,var(--red) 25%,transparent)}
+  .callout.warn .label{color:var(--red)}
+
+  figure{margin:30px 0 34px;background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:20px 18px 14px;box-shadow:var(--shadow);overflow:hidden}
+  figure svg{display:block;width:100%;height:auto;overflow:visible}
+  figcaption{font-size:13.5px;line-height:1.65;color:var(--muted);margin-top:12px;
+    padding-top:11px;border-top:1px dashed var(--line)}
+  figcaption b{color:var(--ink-2);font-weight:650}
+
+  .dg text{font-family:var(--sans)}
+  .dg .box{fill:var(--s-box);stroke:var(--s-stroke);stroke-width:1.2}
+  .dg .soft{fill:var(--s-box-soft);stroke:var(--s-stroke);stroke-width:1.2}
+  .dg .accent{fill:var(--s-box-accent);stroke:var(--s-stroke-accent);stroke-width:1.2}
+  .dg .warn{fill:var(--s-box-warn);stroke:var(--s-stroke-warn);stroke-width:1.2}
+  .dg .good{fill:var(--s-box-green);stroke:color-mix(in srgb,var(--green) 40%,transparent);stroke-width:1.2}
+  .dg svg{font-size:13px}
+  .dg .t{fill:var(--s-t);font-weight:650}
+  .dg .ts{fill:var(--s-ts)}
+  .dg .tm{fill:var(--s-tm);font-weight:700}
+  .dg .tl{fill:var(--s-t);font-size:10px}
+  .dg .line{fill:none;stroke:var(--s-line);stroke-width:1.6}
+  .dg .line-d{fill:none;stroke:var(--s-line-d);stroke-width:1.4;stroke-dasharray:5 4}
+  .dg .line-a{fill:none;stroke:var(--accent);stroke-width:1.8}
+  .dg .line-r{fill:none;stroke:var(--amber);stroke-width:1.6;stroke-dasharray:5 4}
+  .dg .chip{fill:var(--s-box-soft);stroke:var(--s-stroke);stroke-width:1}
+
+  .stepper{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 12px}
+  .stepper button{font:inherit;font-size:13px;padding:6px 13px;border-radius:999px;cursor:pointer;
+    background:var(--bg-soft);color:var(--ink-2);border:1px solid var(--line);transition:.18s}
+  .stepper button:hover{border-color:var(--accent);color:var(--accent)}
+  .stepper button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  .step-text{font-size:14.5px;line-height:1.75;color:var(--ink-2);margin:0 0 6px;min-height:3.4em}
+  .step-text b{color:var(--ink)}
+  .dg [data-s]{opacity:.2;transition:opacity .35s ease}
+  .dg [data-s].on{opacity:1}
+
+  .tablewrap{overflow-x:auto;margin:24px 0 30px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.6}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--bg-soft);font-weight:700;font-size:13px;color:var(--ink-2);white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td code,th code{font-family:var(--mono);font-size:12.5px;background:var(--bg-soft);padding:1px 5px;border-radius:4px}
+
+  pre{background:var(--bg-soft);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.75;margin:22px 0 28px;color:var(--ink-2)}
+  code.inline{font-family:var(--mono);font-size:.87em;background:var(--bg-soft);
+    border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+
+  .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:26px 0 30px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 16px;box-shadow:var(--shadow)}
+  .stat .n{font-size:clamp(22px,3vw,29px);font-weight:800;letter-spacing:-.02em;color:var(--accent);line-height:1.2}
+  .stat .n small{font-size:13px;font-weight:600;color:var(--muted);margin-left:2px}
+  .stat .d{font-size:13px;line-height:1.6;color:var(--muted);margin-top:6px}
+
+  .panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:26px 0 8px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:var(--shadow)}
+  .panel h4{margin:0 0 4px;font-size:14.5px}
+  .panel .sub{font-size:12px;color:var(--muted);margin-bottom:12px}
+
+  .calc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin:24px 0 30px;box-shadow:var(--shadow)}
+  .calc-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  .calc label{font-size:12.5px;color:var(--muted);display:block}
+  .calc input{width:100%;margin-top:6px;font:inherit;font-size:15px;padding:8px 10px;border-radius:8px;
+    border:1px solid var(--line-strong);background:var(--bg);color:var(--ink)}
+  .calc input:focus{outline:2px solid color-mix(in srgb,var(--accent) 35%,transparent);border-color:var(--accent)}
+  .calc-out{border-top:1px dashed var(--line);padding-top:14px;font-size:14.5px;line-height:1.9;color:var(--ink-2)}
+  .calc-out b{font-family:var(--mono);font-size:19px;color:var(--accent);letter-spacing:-.01em}
+  .calc-out .hint{display:block;font-size:12.5px;color:var(--muted);margin-top:6px}
+
+  .summary{background:linear-gradient(160deg,var(--accent-soft),transparent 70%);
+    border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);border-radius:18px;padding:26px 26px 8px;margin:34px 0}
+  .summary h3{margin-top:0}
+  .summary ol{margin:0 0 20px;padding-left:1.2em}
+  .summary li{margin-bottom:10px}
+
+  .footer{max-width:1120px;margin:20px auto 0;padding:36px 24px 70px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:13.5px;line-height:1.8}
+  .footer h4{color:var(--ink);font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 10px}
+  .footer ul{list-style:none;padding:0;margin:0 0 22px}
+  .footer li{margin-bottom:6px}
+  .footer a{color:var(--ink-2)}
+
+  @media (max-width:900px){
+    .layout{grid-template-columns:1fr;gap:0;padding-top:34px}
+    .toc{display:none}
+    .stats,.calc-row{grid-template-columns:1fr}
+    .panels{grid-template-columns:1fr}
+    body{font-size:16.5px}
+    figure{overflow-x:auto;-webkit-overflow-scrolling:touch}
+    figure svg{min-width:640px}
+    pre{font-size:12px}
+  }
+  @media print{
+    #progress,.theme-toggle,.toc,.stepper{display:none!important}
+    body{background:#fff;color:#000;font-size:11.5pt}
+    .hero{background:#fff;color:#000;padding:0 0 18px}
+    .hero::after{display:none}
+    .hero p.lead,.hero-meta,.hero-meta b,.hero-tags span{color:#333}
+    figure,.panel,.stat,.summary,.calc{box-shadow:none;break-inside:avoid}
+    .sec{break-inside:avoid-page}
+  }
+</style>
+</head>
+<body>
+<div id="progress" aria-hidden="true"></div>
+<button class="theme-toggle" id="themeBtn" aria-label="切换深浅色主题" title="切换深浅色主题">◐</button>
+
+<header class="hero">
+  <div class="hero-inner">
+    <span class="eyebrow">Distributed Storage · 图解</span>
+    <h1>一个集群，<em>三种存储</em><br>Ceph 架构图解</h1>
+    <p class="lead">
+      同一批机器，既能当块设备给数据库用，又能当文件系统给训练任务用，还能当对象存储给备份用——这不是三个产品，
+      是 Ceph 同一个集群的三张面孔。它没有中心元数据服务器，也不靠管理员查表分配数据。
+      这篇用七张图，把这个「会自己找位置、会自己搬数据」的系统拆开讲。
+    </p>
+    <div class="hero-tags">
+      <span>统一存储</span><span>RADOS</span><span>CRUSH 寻址</span><span>PG 与副本</span><span>自愈与重平衡</span>
+    </div>
+    <div class="hero-meta">
+      <span>依据 Ceph 官方文档与架构论文</span>
+      <span>阅读约 <b>22 分钟</b></span>
+      <span>零基础友好</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="目录">
+    <h4>目录</h4>
+    <ol>
+      <li><a href="#why">01 · 为什么要统一</a></li>
+      <li><a href="#stack">02 · 一个底座三张脸</a></li>
+      <li><a href="#components">03 · 谁在干活</a></li>
+      <li><a href="#rados">04 · 四个名词</a></li>
+      <li><a href="#crush">05 · 不用查表的寻址</a></li>
+      <li><a href="#write">06 · 一次写怎么落地</a></li>
+      <li><a href="#heal">07 · 坏了怎么办</a></li>
+      <li><a href="#scale">08 · 扩容为什么自己搬</a></li>
+      <li><a href="#interfaces">09 · 三张脸怎么接</a></li>
+      <li><a href="#ops">10 · 运维会疼在哪</a></li>
+      <li><a href="#summary">11 · 一页总结</a></li>
+    </ol>
+  </nav>
+
+  <article>
+
+    <section class="sec" id="why">
+      <div class="sec-head"><span class="sec-no">01</span><h2>为什么要「统一」存储</h2></div>
+
+      <p>
+        一个中等规模的技术团队，存储通常长这样：数据库要块设备，于是买了一套 SAN；
+        训练和分析要共享目录，于是搭了一套 NFS 或 Lustre；备份和静态资源要对象存储，于是又上了一套 S3 兼容系统。
+      </p>
+      <p>三套系统意味着三份硬件、三套运维、三种扩容方式，而且它们之间不能互相借容量。Ceph 想解决的就是这件事：</p>
+
+      <div class="callout">
+        <span class="label">一句话理解 Ceph</span>
+        <p>把一堆普通服务器的本地硬盘，组成一个<strong>统一的分布式存储池</strong>；这个池子同时提供<strong>对象、块、文件</strong>三种访问方式，容量和性能随机器数量线性增长，坏盘坏机自动恢复。</p>
+      </div>
+
+      <p>它敢这么做的底气，来自三层设计：</p>
+      <ul class="clean">
+        <li><strong>底座只有一种东西：对象。</strong>块设备是「把对象拼成磁盘」，文件系统是「给对象加上目录」，对象存储是「直接暴露对象」。三种接口共用同一套数据路径。</li>
+        <li><strong>没有中心元数据服务。</strong>数据放在哪，由客户端用一套确定的算法（CRUSH）自己算出来，不需要问一台中心服务器，也不存在「元数据节点挂了全集群停摆」。</li>
+        <li><strong>把「会坏」写进设计。</strong>副本、心跳、peering、backfill 都是常规流程，不是应急预案。</li>
+      </ul>
+
+      <p class="muted" style="font-size:14px">
+        背景：Ceph 起源于 Sage Weil 的博士工作，核心论文是 2006 年的《CRUSH: Controlled, Scalable, Decentralized Placement of Replicated Data》。今天由 Ceph 基金会维护，是 OpenStack、Kubernetes（Rook）、Proxmox 等平台的常见存储后端。
+      </p>
+    </section>
+
+    <section class="sec" id="stack">
+      <div class="sec-head"><span class="sec-no">02</span><h2>一个底座，三张面孔</h2></div>
+
+      <p>
+        先记住这张分层图。上面三种颜色是用户能看到的三张脸，下面灰色那一层是真正的存储引擎，叫 <strong>RADOS</strong>
+        （Reliable Autonomic Distributed Object Store，可靠、自治的分布式对象存储）。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 430" role="img" aria-labelledby="fig1title">
+          <title id="fig1title">Ceph 三种访问接口共用 RADOS 底座的分层结构</title>
+          <defs>
+            <marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#c94b23"/>
+            </marker>
+          </defs>
+
+          <g>
+            <rect class="accent" x="28" y="28" width="264" height="104" rx="12"/>
+            <text class="t" x="160" y="56" text-anchor="middle">对象存储 · RGW</text>
+            <text class="ts" x="160" y="78" text-anchor="middle">S3 / Swift API</text>
+            <text class="ts" x="160" y="96" text-anchor="middle">图片、备份、数据湖</text>
+            <text class="ts" x="160" y="114" text-anchor="middle">HTTP 访问，天然多租户</text>
+          </g>
+          <g>
+            <rect class="accent" x="318" y="28" width="264" height="104" rx="12"/>
+            <text class="t" x="450" y="56" text-anchor="middle">块存储 · RBD</text>
+            <text class="ts" x="450" y="78" text-anchor="middle">虚拟磁盘 / PVC</text>
+            <text class="ts" x="450" y="96" text-anchor="middle">数据库、虚拟机、容器卷</text>
+            <text class="ts" x="450" y="114" text-anchor="middle">挂上去就是一块盘</text>
+          </g>
+          <g>
+            <rect class="accent" x="608" y="28" width="264" height="104" rx="12"/>
+            <text class="t" x="740" y="56" text-anchor="middle">文件系统 · CephFS</text>
+            <text class="ts" x="740" y="78" text-anchor="middle">POSIX，可挂载目录</text>
+            <text class="ts" x="740" y="96" text-anchor="middle">共享数据、训练样本</text>
+            <text class="ts" x="740" y="114" text-anchor="middle">多客户端同时读写</text>
+          </g>
+
+          <line class="line-a" x1="160" y1="132" x2="160" y2="168" marker-end="url(#c1)"/>
+          <line class="line-a" x1="450" y1="132" x2="450" y2="168" marker-end="url(#c1)"/>
+          <line class="line-a" x1="740" y1="132" x2="740" y2="168" marker-end="url(#c1)"/>
+
+          <rect class="soft" x="90" y="170" width="720" height="58" rx="10"/>
+          <text class="t" x="450" y="196" text-anchor="middle" font-size="12.5">librados · 客户端库（C / C++ / Python / Java / Go）</text>
+          <text class="ts" x="450" y="216" text-anchor="middle">三种接口最后都变成同一种语言：读写对象</text>
+
+          <line class="line-a" x1="450" y1="228" x2="450" y2="262" marker-end="url(#c1)"/>
+
+          <rect class="accent" x="60" y="264" width="780" height="106" rx="12"/>
+          <text class="t" x="450" y="292" text-anchor="middle" font-size="13.5">RADOS · 分布式对象存储底座</text>
+          <g class="ts" text-anchor="middle">
+            <rect class="chip" x="166" y="310" width="68" height="30" rx="6"/>
+            <text x="200" y="330">OSD</text>
+            <rect class="chip" x="276" y="310" width="68" height="30" rx="6"/>
+            <text x="310" y="330">OSD</text>
+            <rect class="chip" x="386" y="310" width="68" height="30" rx="6"/>
+            <text x="420" y="330">OSD</text>
+            <rect class="chip" x="496" y="310" width="68" height="30" rx="6"/>
+            <text x="530" y="330">OSD</text>
+            <rect class="chip" x="606" y="310" width="68" height="30" rx="6"/>
+            <text x="640" y="330">OSD</text>
+            <text x="750" y="330">…</text>
+          </g>
+          <text class="ts" x="450" y="398" text-anchor="middle">副本、纠删码、自愈、重平衡，全部发生在这一层</text>
+          <text class="tm" x="450" y="420" text-anchor="middle">同一份存储能力，三种使用姿势</text>
+        </svg>
+        <figcaption><b>图 1 · 分层。</b>上面三种接口不是三个独立系统，而是同一套 RADOS 的三层皮肤。这也解释了为什么给对象存储扩容，块设备和文件系统会一起变快。</figcaption>
+      </figure>
+
+      <div class="callout analogy">
+        <span class="label">类比</span>
+        <p>把 RADOS 想成一个巨大的仓库，货物统一装进标准箱子（对象）。块存储是把箱子按顺序拼成一条长走廊；文件系统是在箱子上贴目录标签；对象存储则直接让你按编号取箱子。仓库只有一套，取货窗口有三个。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="components">
+      <div class="sec-head"><span class="sec-no">03</span><h2>谁在干活：五个守护进程</h2></div>
+
+      <p>装过 Ceph 的人都会被一堆进程名绕晕。其实只有五个角色，各自职责非常清楚：</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>进程</th><th>职责</th><th>是不是数据必经之路</th></tr></thead>
+          <tbody>
+            <tr><td><code>MON</code></td><td>维护集群地图（谁在、数据怎么分布），用 Paxos 组成仲裁组</td><td>否，只在启动/变更时查询</td></tr>
+            <tr><td><code>OSD</code></td><td>一块盘一个进程，真正存数据、做副本、做恢复</td><td><strong>是</strong>，所有 I/O 都落在这里</td></tr>
+            <tr><td><code>MGR</code></td><td>汇总指标、跑 Dashboard、负载均衡建议</td><td>否</td></tr>
+            <tr><td><code>MDS</code></td><td>只有 CephFS 用，管目录树和文件元数据</td><td>CephFS 的元数据必经</td></tr>
+            <tr><td><code>RGW</code></td><td>对象网关，把 S3/Swift 请求翻译成 RADOS 操作</td><td>对象接口必经</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <figure class="dg">
+        <svg viewBox="0 0 920 520" role="img" aria-labelledby="fig2title">
+          <title id="fig2title">Ceph 组件全景：客户端、MON、MGR、MDS、RGW 与 OSD</title>
+          <defs>
+            <marker id="d1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#c94b23"/>
+            </marker>
+            <marker id="d2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#b6aaa1"/>
+            </marker>
+          </defs>
+
+          <!-- clients -->
+          <rect class="soft" x="22" y="70" width="200" height="188" rx="14"/>
+          <text class="t" x="122" y="96" text-anchor="middle">客户端</text>
+          <rect class="box" x="38" y="110" width="168" height="36" rx="8"/>
+          <text class="ts" x="122" y="133" text-anchor="middle">应用 + librados</text>
+          <rect class="box" x="38" y="154" width="168" height="36" rx="8"/>
+          <text class="ts" x="122" y="177" text-anchor="middle">内核 RBD / CephFS</text>
+          <rect class="box" x="38" y="198" width="168" height="36" rx="8"/>
+          <text class="ts" x="122" y="221" text-anchor="middle">S3 客户端</text>
+
+          <!-- mon -->
+          <rect class="accent" x="300" y="40" width="290" height="112" rx="12"/>
+          <text class="t" x="445" y="66" text-anchor="middle">MON 仲裁组 ×3（奇数）</text>
+          <g>
+            <rect class="box" x="318" y="80" width="72" height="46" rx="6"/>
+            <text class="ts" x="354" y="108" text-anchor="middle">MON</text>
+            <rect class="box" x="406" y="80" width="72" height="46" rx="6"/>
+            <text class="ts" x="442" y="108" text-anchor="middle">MON</text>
+            <rect class="box" x="494" y="80" width="72" height="46" rx="6"/>
+            <text class="ts" x="530" y="108" text-anchor="middle">MON</text>
+          </g>
+          <text class="ts" x="445" y="142" text-anchor="middle">持有集群地图，Paxos 保证一致</text>
+
+          <!-- mgr -->
+          <rect class="soft" x="630" y="40" width="270" height="112" rx="12"/>
+          <text class="t" x="765" y="66" text-anchor="middle">MGR ×2（主备）</text>
+          <text class="ts" x="765" y="92" text-anchor="middle">指标汇总 / Dashboard</text>
+          <text class="ts" x="765" y="112" text-anchor="middle">容量预测 / 负载均衡建议</text>
+          <text class="ts" x="765" y="134" text-anchor="middle">不碰数据</text>
+
+          <!-- gateways -->
+          <rect class="accent" x="300" y="196" width="140" height="76" rx="10"/>
+          <text class="t" x="370" y="222" text-anchor="middle" font-size="12">MDS</text>
+          <text class="ts" x="370" y="242" text-anchor="middle">目录树元数据</text>
+          <text class="ts" x="370" y="258" text-anchor="middle">仅 CephFS 需要</text>
+
+          <rect class="accent" x="456" y="196" width="140" height="76" rx="10"/>
+          <text class="t" x="526" y="222" text-anchor="middle" font-size="12">RGW</text>
+          <text class="ts" x="526" y="242" text-anchor="middle">S3 / Swift 网关</text>
+          <text class="ts" x="526" y="258" text-anchor="middle">把请求翻译成对象读写</text>
+
+          <!-- osd -->
+          <rect class="soft" x="620" y="190" width="280" height="280" rx="14"/>
+          <text class="t" x="760" y="216" text-anchor="middle">OSD 集群（唯一存数据的地方）</text>
+          <g>
+            <rect class="box" x="636" y="230" width="248" height="62" rx="8"/>
+            <text class="ts" x="760" y="252" text-anchor="middle">主机 A</text>
+            <rect class="chip" x="648" y="260" width="70" height="22" rx="5"/>
+            <text class="tl" x="683" y="275" text-anchor="middle">osd.1</text>
+            <rect class="chip" x="726" y="260" width="70" height="22" rx="5"/>
+            <text class="tl" x="761" y="275" text-anchor="middle">osd.2</text>
+            <rect class="chip" x="804" y="260" width="70" height="22" rx="5"/>
+            <text class="tl" x="839" y="275" text-anchor="middle">osd.3</text>
+          </g>
+          <g>
+            <rect class="box" x="636" y="302" width="248" height="62" rx="8"/>
+            <text class="ts" x="760" y="324" text-anchor="middle">主机 B</text>
+            <rect class="chip" x="648" y="332" width="70" height="22" rx="5"/>
+            <text class="tl" x="683" y="347" text-anchor="middle">osd.4</text>
+            <rect class="chip" x="726" y="332" width="70" height="22" rx="5"/>
+            <text class="tl" x="761" y="347" text-anchor="middle">osd.5</text>
+            <rect class="chip" x="804" y="332" width="70" height="22" rx="5"/>
+            <text class="tl" x="839" y="347" text-anchor="middle">osd.6</text>
+          </g>
+          <g>
+            <rect class="box" x="636" y="374" width="248" height="62" rx="8"/>
+            <text class="ts" x="760" y="396" text-anchor="middle">主机 C</text>
+            <rect class="chip" x="648" y="404" width="70" height="22" rx="5"/>
+            <text class="tl" x="683" y="419" text-anchor="middle">osd.7</text>
+            <rect class="chip" x="726" y="404" width="70" height="22" rx="5"/>
+            <text class="tl" x="761" y="419" text-anchor="middle">osd.8</text>
+            <rect class="chip" x="804" y="404" width="70" height="22" rx="5"/>
+            <text class="tl" x="839" y="419" text-anchor="middle">osd.9</text>
+          </g>
+
+          <!-- links -->
+          <path class="line-d" d="M222 140 L296 140" marker-end="url(#d2)"/>
+          <text class="ts" x="258" y="132" text-anchor="middle" font-size="10">取地图</text>
+          <path class="line-a" d="M190 244 L232 244 L232 300 L616 300" marker-end="url(#d1)"/>
+          <text class="tm" x="420" y="292" text-anchor="middle" font-size="10">数据读写直连 OSD</text>
+          <line class="line-d" x1="590" y1="96" x2="626" y2="96" marker-end="url(#d2)"/>
+          <line class="line-d" x1="590" y1="234" x2="616" y2="240" marker-end="url(#d2)"/>
+        </svg>
+        <figcaption><b>图 2 · 组件。</b>客户端先从 MON 拿到集群地图，然后<strong>直接</strong>和 OSD 通信；MDS 与 RGW 也把请求翻译成对象读写。MON 不参与数据路径，所以它挂了只是「不能变更」，已连上的客户端仍能继续读写。</figcaption>
+      </figure>
+
+      <p>
+        这张图里最容易被忽略的两点，恰好是 Ceph 的招牌：
+      </p>
+      <ul class="clean">
+        <li><strong>MON 不是元数据服务器。</strong>它存的是「地图」：哪些 OSD 在、每个 OSD 多重、数据怎么分布。客户端拿到地图后自己算位置，数据面完全不经过 MON。</li>
+        <li><strong>MDS 只服务文件接口。</strong>用 RBD 和 RGW 时根本不需要它。这也是为什么 CephFS 常常是最后才上的那块——它引入了一个需要精心扩容的组件。</li>
+      </ul>
+    </section>
+
+    <section class="sec" id="rados">
+      <div class="sec-head"><span class="sec-no">04</span><h2>RADOS 的四个名词</h2></div>
+
+      <p>
+        后面所有内容都建立在这四个词上，值得多花两分钟：
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>名词</th><th>是什么</th><th>关键点</th></tr></thead>
+          <tbody>
+            <tr><td><code>object</code> 对象</td><td>带名字的字节块，比如 <code>rbd_data.abc.0000000000000010</code></td><td>大小有上限，可以被整体读写、整体校验</td></tr>
+            <tr><td><code>pool</code> 存储池</td><td>对象的逻辑分区，决定副本数、纠删码、PG 数量</td><td>像「表空间」，不同的池可以有完全不同的策略</td></tr>
+            <tr><td><code>PG</code> 归置组</td><td>一批对象的集合，是<strong>复制和恢复的最小单位</strong></td><td>一个 PG 落在哪几个 OSD 上，由 CRUSH 决定</td></tr>
+            <tr><td><code>OSD</code></td><td>一块盘上的守护进程，负责落盘、复制、恢复</td><td>集群里成百上千个，坏了就换，数据自动补</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        为什么要在「对象」和「OSD」之间插一层 PG？因为如果每个对象单独决定放哪、单独做副本、单独做恢复，几亿个对象的管理开销会直接压垮集群。
+        把对象打包成 PG（通常一个 PG 装几千到几万个对象），<strong>复制、校验、迁移都以 PG 为单位</strong>，复杂度立刻降了一个数量级。
+      </p>
+
+      <div class="callout analogy">
+        <span class="label">类比</span>
+        <p>对象是书，PG 是书架上一格一格的「书箱」，OSD 是书架。你不会给每本书单独安排位置和备份，而是按箱管理：一箱书整体放到三个书架上，箱子丢了就整箱补。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="crush">
+      <div class="sec-head"><span class="sec-no">05</span><h2>CRUSH：不用查表的寻址</h2></div>
+
+      <p>
+        传统分布式存储靠一张「对象 → 节点」的映射表，这张表存在元数据服务器上。对象一多，表就巨大；节点一变，表就要重算；元数据服务器还成了单点。
+      </p>
+      <p>
+        Ceph 的做法是：<strong>不存表，存算法</strong>。位置由两步计算得到，任何客户端、任何 OSD 算出来都一样：
+      </p>
+
+      <pre><code>第一步：PG = hash(对象名) &amp; (pg_num - 1)
+        → 对象稳定地落进某个 PG（pg_num 是 2 的幂）
+
+第二步：OSD 列表 = CRUSH(pgid, 集群地图, 规则)
+        → 得到 [osd.12, osd.7, osd.31]，分属三台不同主机</code></pre>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 400" role="img" aria-labelledby="fig3title">
+          <title id="fig3title">对象经过哈希进入 PG，再由 CRUSH 规则选出 OSD 副本集</title>
+          <defs>
+            <marker id="e1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#c94b23"/>
+            </marker>
+          </defs>
+
+          <rect class="box" x="24" y="120" width="170" height="86" rx="10"/>
+          <text class="t" x="109" y="146" text-anchor="middle" font-size="12">对象</text>
+          <text class="ts" x="109" y="168" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10">rbd_data.abc…10</text>
+          <text class="ts" x="109" y="188" text-anchor="middle">1 GB 的块设备切片</text>
+
+          <rect class="soft" x="232" y="130" width="128" height="66" rx="10"/>
+          <text class="t" x="296" y="156" text-anchor="middle" font-size="12">哈希</text>
+          <text class="ts" x="296" y="176" text-anchor="middle" font-size="10">稳定、无状态</text>
+
+          <rect class="accent" x="398" y="112" width="150" height="102" rx="10"/>
+          <text class="t" x="473" y="140" text-anchor="middle" font-size="12">PG 2.7f</text>
+          <text class="ts" x="473" y="162" text-anchor="middle">几千个对象一箱</text>
+          <text class="ts" x="473" y="182" text-anchor="middle">复制 / 恢复的单位</text>
+          <text class="ts" x="473" y="202" text-anchor="middle" font-size="10">pg_num = 1024</text>
+
+          <rect class="soft" x="586" y="112" width="130" height="102" rx="10"/>
+          <text class="t" x="651" y="140" text-anchor="middle" font-size="12">CRUSH</text>
+          <text class="ts" x="651" y="162" text-anchor="middle" font-size="10">输入：pgid</text>
+          <text class="ts" x="651" y="180" text-anchor="middle" font-size="10">+ 权重 + 故障域</text>
+          <text class="ts" x="651" y="198" text-anchor="middle" font-size="10">输出：OSD 列表</text>
+
+          <rect class="accent" x="754" y="70" width="122" height="46" rx="8"/>
+          <text class="ts" x="815" y="98" text-anchor="middle">osd.12 · 主机 A</text>
+          <rect class="accent" x="754" y="134" width="122" height="46" rx="8"/>
+          <text class="ts" x="815" y="162" text-anchor="middle">osd.7 · 主机 B</text>
+          <rect class="accent" x="754" y="198" width="122" height="46" rx="8"/>
+          <text class="ts" x="815" y="226" text-anchor="middle">osd.31 · 主机 C</text>
+
+          <line class="line-a" x1="196" y1="163" x2="228" y2="163" marker-end="url(#e1)"/>
+          <line class="line-a" x1="362" y1="163" x2="394" y2="163" marker-end="url(#e1)"/>
+          <line class="line-a" x1="550" y1="163" x2="582" y2="163" marker-end="url(#e1)"/>
+          <path class="line-a" d="M718 145 L750 108" marker-end="url(#e1)"/>
+          <line class="line-a" x1="718" y1="163" x2="750" y2="158" marker-end="url(#e1)"/>
+          <path class="line-a" d="M718 184 L750 210" marker-end="url(#e1)"/>
+
+          <rect class="warn" x="24" y="286" width="852" height="88" rx="10"/>
+          <text class="ts" x="42" y="312">没有「分配表」意味着：任何节点都能自己算出位置，不需要问中心；</text>
+          <text class="ts" x="42" y="334">新增一块盘，只需更新地图并改权重，旧对象按算法重算位置——</text>
+          <text class="tm" x="42" y="358">该动的自己会动，不该动的原地不动。这就是「可控」的含义。</text>
+        </svg>
+        <figcaption><b>图 3 · 两步寻址。</b>哈希保证同一对象永远进同一个 PG；CRUSH 保证同一 PG 永远得到同一组 OSD（在拓扑不变时）。客户端算一次就能直接发请求，数据中心里没有任何「查找服务」。</figcaption>
+      </figure>
+
+      <h3>「故障域」是 CRUSH 的关键词</h3>
+      <p>
+        CRUSH 地图不是一张平铺的 OSD 列表，而是一棵树：
+        <span class="kbd">root → rack → host → osd</span>。规则里会写明「三个副本必须落在不同 host」，
+        于是算法在选副本时会<strong>跳过同一台机器</strong>。这样一台机器整机断电，最多只丢一份副本。
+      </p>
+      <p>
+        再进一步，如果你的机架共用一路电，就该把规则写成「不同 rack」。故障域定多细，取决于你怕什么——
+        怕单盘坏、怕整机坏、还是怕整个机架掉电。
+      </p>
+
+      <div class="callout warn">
+        <span class="label">常见误解</span>
+        <p>CRUSH 不是一致性哈希。一致性哈希只解决「节点增减时少搬数据」，不解决「副本必须分散在不同故障域」；CRUSH 用带权重的伪随机选择同时解决这两件事，代价是算法和地图都更复杂。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="write">
+      <div class="sec-head"><span class="sec-no">06</span><h2>一次写，怎么落到三块盘上</h2></div>
+
+      <p>
+        PG 选出的那组 OSD 里，有一个是 <strong>primary</strong>（主），其余是副本。
+        客户端只跟 primary 说话，primary 负责把写<strong>并行</strong>发给所有副本，全部确认后才回复客户端。
+      </p>
+
+      <figure class="dg" id="writeFig">
+        <svg viewBox="0 0 900 430" role="img" aria-labelledby="fig4title">
+          <title id="fig4title">Ceph 写路径：客户端发给主 OSD，主 OSD 并行写副本并汇总应答</title>
+          <defs>
+            <marker id="f1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#c94b23"/>
+            </marker>
+            <marker id="f2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10Z" fill="#a86a00"/>
+            </marker>
+          </defs>
+
+          <text class="ts" x="30" y="30" font-size="10.5">客户端</text>
+          <text class="ts" x="450" y="30" text-anchor="middle" font-size="10.5">写请求 ⇒ 主 OSD 并行分发</text>
+          <text class="ts" x="450" y="54" text-anchor="middle" font-size="10.5">⇐ 全部副本确认后才回 ACK</text>
+
+          <rect class="box" x="24" y="150" width="122" height="96" rx="10"/>
+          <text class="t" x="85" y="178" text-anchor="middle" font-size="12">客户端</text>
+          <text class="ts" x="85" y="200" text-anchor="middle">write object</text>
+          <text class="ts" x="85" y="218" text-anchor="middle" font-size="10">已持有集群地图</text>
+          <text class="ts" x="85" y="236" text-anchor="middle" font-size="10">自己算出 PG 2.7f</text>
+
+          <g>
+            <rect class="accent" x="200" y="118" width="170" height="152" rx="10"/>
+            <text class="t" x="285" y="146" text-anchor="middle" font-size="12">osd.12 · primary</text>
+            <text class="ts" x="285" y="170" text-anchor="middle">收写请求</text>
+            <text class="ts" x="285" y="190" text-anchor="middle">写本地 BlueStore</text>
+            <text class="ts" x="285" y="210" text-anchor="middle">同时发给两个副本</text>
+            <text class="tm" x="285" y="238" text-anchor="middle" data-s="2 3 4">等所有副本回执</text>
+            <text class="ts" x="285" y="258" text-anchor="middle" font-size="10">主副本是并发，不是接力</text>
+          </g>
+
+          <g>
+            <rect class="box" x="440" y="80" width="170" height="96" rx="10"/>
+            <text class="t" x="525" y="106" text-anchor="middle" font-size="12">osd.7 · 副本</text>
+            <text class="ts" x="525" y="128" text-anchor="middle">主机 B</text>
+            <text class="ts" x="525" y="148" text-anchor="middle">落盘后回执</text>
+            <text class="tm" x="525" y="168" text-anchor="middle" font-size="10" data-s="2 3 4">已写入</text>
+          </g>
+          <g>
+            <rect class="box" x="440" y="212" width="170" height="96" rx="10"/>
+            <text class="t" x="525" y="238" text-anchor="middle" font-size="12">osd.31 · 副本</text>
+            <text class="ts" x="525" y="260" text-anchor="middle">主机 C</text>
+            <text class="ts" x="525" y="280" text-anchor="middle">落盘后回执</text>
+            <text class="tm" x="525" y="300" text-anchor="middle" font-size="10" data-s="2 3 4">已写入</text>
+          </g>
+
+          <rect class="warn" x="656" y="118" width="220" height="118" rx="10"/>
+          <text class="ts" x="672" y="142">min_size 决定底线：</text>
+          <text class="ts" x="672" y="162">size=3 但有 1 个副本失联时，</text>
+          <text class="ts" x="672" y="182">只要剩 2 个（min_size=2）</text>
+          <text class="ts" x="672" y="202">就继续接受写，进入降级状态；</text>
+          <text class="ts" x="672" y="222">只剩 1 个就拒绝写，保护数据。</text>
+
+          <line class="line-a" x1="150" y1="182" x2="196" y2="182" marker-end="url(#f1)" data-s="1 2 3 4"/>
+          <path class="line-a" d="M370 160 L436 128" marker-end="url(#f1)" data-s="2 3 4"/>
+          <path class="line-a" d="M370 214 L436 250" marker-end="url(#f1)" data-s="2 3 4"/>
+          <path class="line-r" d="M436 150 L372 190" marker-end="url(#f2)" data-s="3 4"/>
+          <path class="line-r" d="M436 236 L372 212" marker-end="url(#f2)" data-s="3 4"/>
+          <line class="line-r" x1="196" y1="228" x2="150" y2="228" marker-end="url(#f2)" data-s="4"/>
+
+          <text class="ts" x="285" y="352" text-anchor="middle">每个 OSD 都有一套本地存储引擎（BlueStore）</text>
+          <text class="ts" x="285" y="376" text-anchor="middle">它直接管理裸盘：数据块 + RocksDB 元数据 + 校验和</text>
+          <text class="tm" x="285" y="400" text-anchor="middle">没有本地文件系统，少一层，也少一次写放大</text>
+        </svg>
+        <div class="stepper" role="group" aria-label="Ceph 写路径分步演示">
+          <button type="button" data-step="1" aria-pressed="true">1 客户端寻址</button>
+          <button type="button" data-step="2" aria-pressed="false">2 主 OSD 分发</button>
+          <button type="button" data-step="3" aria-pressed="false">3 副本落盘</button>
+          <button type="button" data-step="4" aria-pressed="false">4 回 ACK</button>
+        </div>
+        <p class="step-text" id="writeText" aria-live="polite">
+          <b>第 1 步：</b>客户端用集群地图自己算出这个对象属于 PG 2.7f，再算出这组 OSD 的主是 osd.12，于是把写请求直接发给它——整个过程没有查询任何元数据服务器。
+        </p>
+        <figcaption><b>图 4 · 写路径。</b>副本是<strong>并行</strong>写的，不是链式接力。主 OSD 要等所有副本回执后才应答客户端，因此读到的数据永远是已提交的。</figcaption>
+      </figure>
+
+      <p>
+        这里有个设计取舍值得说清：并行写让延迟取决于「最慢的那个副本」，而不是累加；
+        但主 OSD 要暂存所有未完成的写，内存和网络压力集中在一台机器上。这也是为什么 Ceph 的 OSD 需要不错的 CPU 和网络，而不是只堆硬盘。
+      </p>
+
+      <p>
+        至于落盘，现代 Ceph 默认用 <strong>BlueStore</strong>：直接操作裸设备，数据块自己管，对象元数据放在 RocksDB 里。
+        相比早期的 FileStore（数据先写本地文件系统再落盘），它少了一层间接，也避免了文件系统的双重缓存。
+      </p>
+    </section>
+
+    <section class="sec" id="heal">
+      <div class="sec-head"><span class="sec-no">07</span><h2>坏了怎么办：从 degraded 到 clean</h2></div>
+
+      <p>
+        一块盘掉了，PG 立刻进入 <strong>degraded</strong>（降级）状态：副本数不足，但数据还在，读写继续。
+        同时 MON 会更新 OSD 地图，把这块盘标记为 <code>down</code>，并把新的地图推给所有客户端和 OSD。
+      </p>
+      <p>
+        接着，CRUSH 会为受影响的 PG 重新选一个 OSD 来补位。新 OSD 需要从现有副本把数据拷过来，这个过程叫 <strong>backfill</strong>。
+        在补完之前，这个 PG 处于 <code>active+undersized+degraded</code>；补完之后回到 <code>active+clean</code>。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 360" role="img" aria-labelledby="fig5title">
+          <title id="fig5title">CRUSH 故障域树：三个副本分散在三台主机，单盘故障不影响数据可用性</title>
+
+          <rect class="soft" x="330" y="24" width="240" height="44" rx="8"/>
+          <text class="ts" x="450" y="52" text-anchor="middle">root（整个集群）</text>
+          <line class="line" x1="450" y1="68" x2="450" y2="88"/>
+          <line class="line" x1="180" y1="88" x2="720" y2="88"/>
+          <line class="line" x1="180" y1="88" x2="180" y2="104"/>
+          <line class="line" x1="450" y1="88" x2="450" y2="104"/>
+          <line class="line" x1="720" y1="88" x2="720" y2="104"/>
+
+          <rect class="box" x="96" y="106" width="168" height="44" rx="8"/>
+          <text class="ts" x="180" y="134" text-anchor="middle">host A</text>
+          <rect class="box" x="366" y="106" width="168" height="44" rx="8"/>
+          <text class="ts" x="450" y="134" text-anchor="middle">host B</text>
+          <rect class="box" x="636" y="106" width="168" height="44" rx="8"/>
+          <text class="ts" x="720" y="134" text-anchor="middle">host C</text>
+
+          <line class="line" x1="180" y1="150" x2="180" y2="180"/>
+          <line class="line" x1="450" y1="150" x2="450" y2="180"/>
+          <line class="line" x1="720" y1="150" x2="720" y2="180"/>
+
+          <rect class="warn" x="120" y="182" width="120" height="58" rx="8"/>
+          <text class="ts" x="180" y="206" text-anchor="middle">osd.12</text>
+          <text class="ts" x="180" y="224" text-anchor="middle" font-size="10">✕ 磁盘故障</text>
+
+          <rect class="good" x="390" y="182" width="120" height="58" rx="8"/>
+          <text class="ts" x="450" y="206" text-anchor="middle">osd.7</text>
+          <text class="ts" x="450" y="224" text-anchor="middle" font-size="10">✓ 副本 1</text>
+
+          <rect class="good" x="660" y="182" width="120" height="58" rx="8"/>
+          <text class="ts" x="720" y="206" text-anchor="middle">osd.31</text>
+          <text class="ts" x="720" y="224" text-anchor="middle" font-size="10">✓ 副本 2</text>
+
+          <text class="ts" x="30" y="46">CRUSH 规则：</text>
+          <text class="tm" x="30" y="68">三个副本必须落在不同 host</text>
+
+          <rect class="soft" x="120" y="268" width="700" height="66" rx="10"/>
+          <text class="ts" x="140" y="294">单盘坏 → PG 降级但仍可读写（2/3 副本在）；再坏一台 → 只剩 1 份，进入只读保护风险区；</text>
+          <text class="tm" x="140" y="318">所以生产上要在「坏第二块盘之前」把数据补齐，而不是等它坏。</text>
+        </svg>
+        <figcaption><b>图 5 · 故障域。</b>副本分散在不同主机，是 CRUSH 规则保证的，不是碰运气。整机宕机最多损失一份副本，PG 会在别的机器上重建第三份。</figcaption>
+      </figure>
+
+      <h3>PG 的状态，就是集群的健康报告</h3>
+      <p>跑 <code>ceph -s</code> 时看到的那一行，其实是所有 PG 状态的汇总。常见的几个：</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>状态</th><th>含义</th><th>要不要紧张</th></tr></thead>
+          <tbody>
+            <tr><td><code>active+clean</code></td><td>副本齐全，读写正常</td><td>健康</td></tr>
+            <tr><td><code>degraded</code></td><td>副本数不足，但还能读写</td><td>要关注，等它自愈</td></tr>
+            <tr><td><code>undersized</code></td><td>实际副本数少于配置值</td><td>同上，通常一起出现</td></tr>
+            <tr><td><code>peering</code></td><td>副本之间正在协商谁的数据最新</td><td>短暂正常</td></tr>
+            <tr><td><code>backfilling</code></td><td>正在把数据拷给新 OSD</td><td>正常，但会吃带宽</td></tr>
+            <tr><td><code>remapped</code></td><td>PG 暂时落在非理想位置</td><td>恢复期常见</td></tr>
+            <tr><td><code>stale</code></td><td>MON 收不到这个 PG 主 OSD 的汇报</td><td>要查，可能是网络分区</td></tr>
+            <tr><td><code>inconsistent</code></td><td>scrub 发现副本内容不一致</td><td>要查，通常意味着静默损坏</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        还有两个后台动作要区分：<strong>scrub</strong> 只比对元数据和校验和，很快；
+        <strong>deep-scrub</strong> 会读出全部数据逐块校验，很慢但能发现「盘说写成功、实际数据坏了」的静默错误。
+        生产环境一般错峰跑，别和备份抢带宽。
+      </p>
+    </section>
+
+    <section class="sec" id="scale">
+      <div class="sec-head"><span class="sec-no">08</span><h2>扩容：为什么数据会自己搬家</h2></div>
+
+      <p>
+        加机器是 Ceph 最日常的操作，也是最容易让人紧张的：<code>ceph osd crush add</code> 一执行，监控上立刻出现一片 backfilling。
+        这不是故障，是设计使然——新盘加入后权重变了，一部分 PG 需要搬到新位置去，让数据重新均匀。
+      </p>
+
+      <div class="callout">
+        <span class="label">一个能算出来的数</span>
+        <p>从 n 个等权重的 OSD 扩到 n+1 个，大约有 <strong>1/(n+1)</strong> 的数据需要移动。100 块盘加 1 块，只搬 1%；10 块盘加 1 块，要搬 9%。<strong>集群越大，扩容越平滑</strong>——这也是为什么小集群扩容反而更疼。</p>
+      </div>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 340" role="img" aria-labelledby="fig6title">
+          <title id="fig6title">新增 OSD 后，只有约 1/(n+1) 的 PG 需要迁移到新盘</title>
+
+          <text class="ts" x="30" y="34">扩容前：5 块盘，每块承担 20% 的 PG</text>
+          <g>
+            <rect class="box" x="30" y="48" width="155" height="40" rx="6"/>
+            <text class="ts" x="107" y="73" text-anchor="middle">osd.1 · 20%</text>
+            <rect class="box" x="200" y="48" width="155" height="40" rx="6"/>
+            <text class="ts" x="277" y="73" text-anchor="middle">osd.2 · 20%</text>
+            <rect class="box" x="370" y="48" width="155" height="40" rx="6"/>
+            <text class="ts" x="447" y="73" text-anchor="middle">osd.3 · 20%</text>
+            <rect class="box" x="540" y="48" width="155" height="40" rx="6"/>
+            <text class="ts" x="617" y="73" text-anchor="middle">osd.4 · 20%</text>
+            <rect class="box" x="710" y="48" width="155" height="40" rx="6"/>
+            <text class="ts" x="787" y="73" text-anchor="middle">osd.5 · 20%</text>
+          </g>
+
+          <text class="ts" x="30" y="140">扩容后：6 块盘，新盘从每块旧盘「分走」一部分 PG（合计约 1/6）</text>
+          <g>
+            <rect class="box" x="30" y="154" width="130" height="40" rx="6"/>
+            <text class="ts" x="95" y="179" text-anchor="middle" font-size="10.5">osd.1 · 16.7%</text>
+            <rect class="box" x="170" y="154" width="130" height="40" rx="6"/>
+            <text class="ts" x="235" y="179" text-anchor="middle" font-size="10.5">osd.2 · 16.7%</text>
+            <rect class="box" x="310" y="154" width="130" height="40" rx="6"/>
+            <text class="ts" x="375" y="179" text-anchor="middle" font-size="10.5">osd.3 · 16.7%</text>
+            <rect class="box" x="450" y="154" width="130" height="40" rx="6"/>
+            <text class="ts" x="515" y="179" text-anchor="middle" font-size="10.5">osd.4 · 16.7%</text>
+            <rect class="box" x="590" y="154" width="130" height="40" rx="6"/>
+            <text class="ts" x="655" y="179" text-anchor="middle" font-size="10.5">osd.5 · 16.7%</text>
+            <rect class="accent" x="730" y="154" width="130" height="40" rx="6"/>
+            <text class="ts" x="795" y="179" text-anchor="middle" font-size="10.5">osd.6 · 新</text>
+          </g>
+
+          <g>
+            <rect class="warn" x="30" y="228" width="835" height="88" rx="10"/>
+            <text class="ts" x="48" y="254">迁移不是把整块盘复制一遍：CRUSH 只让「受影响的那部分 PG」换位置，</text>
+            <text class="ts" x="48" y="276">其余 PG 原地不动。所以扩容的代价与集群规模成反比，而不是与数据总量成正比。</text>
+            <text class="tm" x="48" y="300">代价：恢复期间带宽和 IOPS 会被占用，业务可能变慢——所以要限速、错峰。</text>
+          </g>
+        </svg>
+        <figcaption><b>图 6 · 重平衡。</b>加盘后短暂的数据迁移是正常现象。真正要防的是「迁移把业务带宽吃光」，常用手段是给 recovery/backfill 设上限。</figcaption>
+      </figure>
+
+      <p>下面这几条命令，基本覆盖了扩容时的全部操作：</p>
+      <pre><code># 看谁在迁、迁了多少
+ceph -s
+ceph pg stat
+
+# 限制恢复速度，别把业务带宽吃光
+ceph config set osd osd_max_backfills 1
+ceph config set osd osd_recovery_max_active 3
+ceph config set osd osd_recovery_sleep 0.1
+
+# 维护窗口：先停数据迁移，再动硬件
+ceph osd set noout
+ceph osd set norecover</code></pre>
+
+      <div class="callout warn">
+        <span class="label">顺序很重要</span>
+        <p>维护前先 <code>noout</code>，是避免 MON 把这台机器判死、触发一轮没必要的迁移；维护完记得 <code>unset</code>，否则它会一直「假装健康」，等你发现时已经少了一份副本。</p>
+      </div>
+    </section>
+
+    <section class="sec" id="interfaces">
+      <div class="sec-head"><span class="sec-no">09</span><h2>三张脸，各自的门道</h2></div>
+
+      <h3>块存储 RBD：把对象拼成一块盘</h3>
+      <p>
+        一个 RBD 镜像（image）在 RADOS 里就是一堆对象，按固定大小切开、编号。挂载到主机上就是 <code>/dev/rbd0</code>，
+        可以被格式化成 ext4/XFS，也可以直接给数据库用。
+      </p>
+      <ul class="clean">
+        <li><strong>精简置备</strong>：声明 1TB，实际只占用写过的部分，创建瞬间完成。</li>
+        <li><strong>快照与克隆</strong>：快照是写时复制，克隆可以在几秒内派生出一个新卷，适合批量开环境。</li>
+        <li><strong>不适合</strong>：多个客户端同时读写同一块未加集群文件系统的盘。RBD 不是共享盘，要做共享请上 CephFS 或 GFS2。</li>
+      </ul>
+
+      <h3>文件系统 CephFS：多一个 MDS</h3>
+      <p>
+        CephFS 把目录树拆成元数据（放元数据池）和数据（放数据池）。MDS 负责目录、权限、文件锁，
+        并用<strong>动态子树分区</strong>把目录树切成几段分给多个 MDS，热点目录可以单独迁到空闲的 MDS 上。
+      </p>
+      <p>
+        它的短板也很清楚：元数据操作要经过 MDS，海量小文件、频繁 stat 的场景会成为瓶颈；
+        MDS 的扩容与排障，比 OSD 麻烦得多。纯大文件顺序读写反而很轻松。
+      </p>
+
+      <h3>对象存储 RGW：S3 的门面</h3>
+      <p>
+        RGW 是无状态网关，把 HTTP 请求翻译成 RADOS 对象操作。桶索引本身也是对象（分片存放），
+        所以「列桶」这类操作在超大桶上会比读写慢，这也是所有对象存储的通病。
+      </p>
+      <p>
+        多站点复制（multisite）是异步的：两个站点各自可写，最终一致。别把它当同步容灾。
+      </p>
+
+      <h3>副本还是纠删码？</h3>
+      <p>
+        PG 的冗余方式由 pool 决定。副本简单、可任意覆盖写、恢复快；纠删码省空间，但写要「读旧数据、算校验、再写」，小随机写会被放大。
+      </p>
+
+      <figure class="dg">
+        <svg viewBox="0 0 900 330" role="img" aria-labelledby="fig7title">
+          <title id="fig7title">三副本与纠删码 4+2 的空间效率对比</title>
+
+          <text class="t" x="30" y="36" font-size="12.5">3 副本：写 3 份，能存 1/3</text>
+          <g>
+            <rect class="accent" x="30" y="52" width="120" height="56" rx="6"/>
+            <text class="ts" x="90" y="78" text-anchor="middle">数据块</text>
+            <text class="ts" x="90" y="96" text-anchor="middle" font-size="10">osd A</text>
+            <rect class="accent" x="160" y="52" width="120" height="56" rx="6"/>
+            <text class="ts" x="220" y="78" text-anchor="middle">同一份</text>
+            <text class="ts" x="220" y="96" text-anchor="middle" font-size="10">osd B</text>
+            <rect class="accent" x="290" y="52" width="120" height="56" rx="6"/>
+            <text class="ts" x="350" y="78" text-anchor="middle">同一份</text>
+            <text class="ts" x="350" y="96" text-anchor="middle" font-size="10">osd C</text>
+          </g>
+          <text class="ts" x="30" y="136">空间效率 33% · 任意一块盘坏都能读 · 覆盖写直接写三份</text>
+
+          <text class="t" x="30" y="192" font-size="12.5">纠删码 4+2：切成 4 份 + 2 份校验，能存 1/1.5</text>
+          <g>
+            <rect class="accent" x="30" y="208" width="86" height="50" rx="6"/>
+            <text class="ts" x="73" y="238" text-anchor="middle" font-size="10.5">D1</text>
+            <rect class="accent" x="124" y="208" width="86" height="50" rx="6"/>
+            <text class="ts" x="167" y="238" text-anchor="middle" font-size="10.5">D2</text>
+            <rect class="accent" x="218" y="208" width="86" height="50" rx="6"/>
+            <text class="ts" x="261" y="238" text-anchor="middle" font-size="10.5">D3</text>
+            <rect class="accent" x="312" y="208" width="86" height="50" rx="6"/>
+            <text class="ts" x="355" y="238" text-anchor="middle" font-size="10.5">D4</text>
+            <rect class="warn" x="406" y="208" width="86" height="50" rx="6"/>
+            <text class="ts" x="449" y="238" text-anchor="middle" font-size="10.5">P1</text>
+            <rect class="warn" x="500" y="208" width="86" height="50" rx="6"/>
+            <text class="ts" x="543" y="238" text-anchor="middle" font-size="10.5">P2</text>
+          </g>
+          <text class="ts" x="30" y="284">空间效率 67% · 最多同时坏 2 块 · 小随机写要先读旧数据再算校验</text>
+          <text class="tm" x="30" y="310">选型口诀：写多读多、要求低延迟 → 副本；冷数据、大文件、要容量 → 纠删码</text>
+        </svg>
+        <figcaption><b>图 7 · 副本 vs 纠删码。</b>纠删码在容量上划算，但写放大和恢复开销都更高；CephFS 的元数据池、RGW 的桶索引必须用副本，不能放纠删码池。</figcaption>
+      </figure>
+    </section>
+
+    <section class="sec" id="ops">
+      <div class="sec-head"><span class="sec-no">10</span><h2>运维真正会疼的地方</h2></div>
+
+      <p>
+        Ceph 的架构很优雅，但它的运维曲线不温柔。下面几个坑，几乎每个生产集群都会踩：
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>坑</th><th>现象</th><th>怎么防</th></tr></thead>
+          <tbody>
+            <tr><td>PG 数不合理</td><td>每 OSD 的 PG 过少 → 分布不均；过多 → 内存和 peering 开销爆炸</td><td>按「每 OSD 100–200 个 PG」估算，开 <code>pg_autoscaler</code></td></tr>
+            <tr><td>集群快满</td><td>到 <code>nearfull</code> 开始告警，到 <code>full</code> 直接拒绝写，且无法自愈</td><td>留 20% 余量，监控 full ratio，别等 95%</td></tr>
+            <tr><td>时钟漂移</td><td>MON 之间时间不同步，仲裁异常</td><td>所有节点跑 NTP/chrony，这是硬要求</td></tr>
+            <tr><td>恢复风暴</td><td>换一块盘引发全集群 backfill，业务延迟飙升</td><td>限制 backfill/recovery 并发与带宽，错峰</td></tr>
+            <tr><td>小对象太多</td><td>RGW 列桶慢、RBD 元数据压力大</td><td>合并小文件，或换更适合的系统</td></tr>
+            <tr><td>误操作删池</td><td>数据瞬间不可恢复</td><td>开 <code>mon_allow_pool_delete=false</code>，快照与异地备份</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>算一下：你的集群该有多少 PG</h3>
+      <p>经验公式是「每块 OSD 承载 100 个左右的 PG」，再按副本数折算成池的 <code>pg_num</code>。改下面的数字看看：</p>
+
+      <div class="calc">
+        <div class="calc-row">
+          <label>OSD 数量
+            <input id="osdN" type="number" min="1" step="1" value="36" inputmode="numeric">
+          </label>
+          <label>副本数
+            <input id="repN" type="number" min="1" max="6" step="1" value="3" inputmode="numeric">
+          </label>
+          <label>每 OSD 目标 PG
+            <input id="perOsd" type="number" min="10" step="10" value="100" inputmode="numeric">
+          </label>
+        </div>
+        <div class="calc-out">
+          建议单个池的 <code class="inline">pg_num</code> ≈ <b id="pgOut">1024</b>
+          <span class="hint" id="pgHint">已向上取到 2 的幂；若集群有多个池，请把这些 PG 在各池之间分摊，而不是每个池都用这个数。</span>
+        </div>
+      </div>
+
+      <p class="muted" style="font-size:14px">
+        公式：<code class="inline">pg_num ≈ 向上取 2 的幂( OSD 数 × 每 OSD 目标 PG ÷ 副本数 )</code>。
+        开 <code class="inline">pg_autoscaler</code> 后它会自己微调，但初始值设得太离谱，自动扩缩也要跑很久。
+      </p>
+    </section>
+
+    <section class="sec" id="summary">
+      <div class="sec-head"><span class="sec-no">11</span><h2>一页总结</h2></div>
+
+      <div class="summary">
+        <h3>如果只记六句话</h3>
+        <ol>
+          <li><strong>一个底座，三种接口。</strong>对象、块、文件都落在 RADOS 上，扩容一次三头受益。</li>
+          <li><strong>没有中心元数据。</strong>位置靠 CRUSH 算出来，客户端拿着地图直接找 OSD，MON 不碰数据。</li>
+          <li><strong>PG 是管理单位。</strong>对象打包成 PG，复制、校验、迁移、恢复都以 PG 为单位。</li>
+          <li><strong>写靠主副本。</strong>主 OSD 并行写所有副本，全确认才应答；min_size 决定降级时的底线。</li>
+          <li><strong>故障是常态。</strong>降级、peering、backfill 都是常规流程，关键是别让恢复拖垮业务。</li>
+          <li><strong>扩容即重平衡。</strong>加盘会搬约 1/(n+1) 的数据，集群越大越平滑；记得限速。</li>
+        </ol>
+      </div>
+
+      <p>
+        如果你读过本站的 3FS 那篇，会发现两个系统在同一个问题上给出了相反答案：
+      </p>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>维度</th><th>Ceph</th><th>3FS</th></tr></thead>
+          <tbody>
+            <tr><td>元数据</td><td>无中心，CRUSH 计算位置</td><td>无状态服务 + FoundationDB</td></tr>
+            <tr><td>冗余</td><td>副本或纠删码，可混用</td><td>链式复制（CRAQ），强一致</td></tr>
+            <tr><td>接口</td><td>对象 / 块 / 文件三套</td><td>POSIX 文件 + 原生零拷贝 API</td></tr>
+            <tr><td>定位</td><td>通用统一存储，能跑十年</td><td>AI 训练/推理，为吞吐极致优化</td></tr>
+            <tr><td>代价</td><td>运维复杂，小文件与元数据偏弱</td><td>依赖 RDMA，小文件与通用性让位</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Ceph 的厉害之处不在于某个单点的性能，而在于它用一套<strong>没有中心、可以自己算、坏了自己补</strong>的模型，
+        撑住了「对象、块、文件」三种完全不同的用法，并且能在同一批硬件上跑十年。理解了 CRUSH 和 PG，这套系统就不再神秘了。
+      </p>
+    </section>
+
+  </article>
+</div>
+
+<footer class="footer">
+  <h4>参考</h4>
+  <ul>
+    <li><a href="https://docs.ceph.com/en/latest/architecture/" target="_blank" rel="noopener">Ceph 官方文档 · Architecture</a></li>
+    <li><a href="https://docs.ceph.com/en/latest/rados/operations/crush-map/" target="_blank" rel="noopener">CRUSH Maps · 故障域与权重</a></li>
+    <li><a href="https://docs.ceph.com/en/latest/rados/operations/placement-groups/" target="_blank" rel="noopener">Placement Groups · 数量与状态</a></li>
+    <li><a href="https://ceph.io/assets/pdfs/weil-thesis.pdf" target="_blank" rel="noopener">Sage Weil 博士论文 · Ceph 原始设计</a></li>
+  </ul>
+  <p>本文为面向初学者的技术解读，架构与默认值依据官方文档；性能与取舍部分的评述经过简化，具体参数请以你所用版本的文档为准。</p>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  var bar = document.getElementById('progress');
+  function onScroll(){
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    var p = max > 0 ? (h.scrollTop || document.body.scrollTop) / max : 0;
+    bar.style.width = Math.min(100, Math.max(0, p * 100)) + '%';
+  }
+  document.addEventListener('scroll', onScroll, {passive:true});
+  window.addEventListener('resize', onScroll);
+  onScroll();
+
+  var root = document.documentElement;
+  var btn = document.getElementById('themeBtn');
+  var saved = null;
+  try { saved = localStorage.getItem('ceph-theme'); } catch(e){}
+  if (saved) root.setAttribute('data-theme', saved);
+  else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) root.setAttribute('data-theme','dark');
+  btn.addEventListener('click', function(){
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('ceph-theme', next); } catch(e){}
+  });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  var sections = links.map(function(a){ return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+  function setActive(id){
+    links.forEach(function(a){ a.classList.toggle('active', a.getAttribute('href') === '#' + id); });
+  }
+  if ('IntersectionObserver' in window && sections.length){
+    var io = new IntersectionObserver(function(entries){
+      var visible = entries.filter(function(e){ return e.isIntersecting; });
+      if (visible.length){
+        visible.sort(function(a,b){ return a.boundingClientRect.top - b.boundingClientRect.top; });
+        setActive(visible[0].target.id);
+      }
+    }, {rootMargin:'-15% 0px -70% 0px', threshold:0});
+    sections.forEach(function(s){ io.observe(s); });
+  }
+
+  /* write path stepper */
+  var fig = document.getElementById('writeFig');
+  var textEl = document.getElementById('writeText');
+  if (fig && textEl){
+    var texts = {
+      1: '<b>第 1 步：</b>客户端用集群地图自己算出这个对象属于 PG 2.7f，再算出这组 OSD 的主是 osd.12，于是把写请求直接发给它——整个过程没有查询任何元数据服务器。',
+      2: '<b>第 2 步：</b>主 OSD 先把数据写进本地 BlueStore，同时把同一份数据并发发给 osd.7 和 osd.31。注意是并发，不是像接力那样一站传一站。',
+      3: '<b>第 3 步：</b>两个副本各自落盘并回执。只要还有一个副本没回，主 OSD 就不能告诉客户端「写成功」——这是强一致的来源。',
+      4: '<b>第 4 步：</b>主 OSD 收到全部回执，回复客户端。若此刻某个副本失联，只要剩余副本数不低于 min_size，写仍然成功，PG 标记为 degraded，随后自动补齐。'
+    };
+    var items = fig.querySelectorAll('[data-s]');
+    var btns = fig.querySelectorAll('.stepper button');
+
+    function render(step){
+      items.forEach(function(el){
+        var list = (el.getAttribute('data-s') || '').split(' ');
+        el.classList.toggle('on', list.indexOf(String(step)) !== -1);
+      });
+      btns.forEach(function(b){
+        b.setAttribute('aria-pressed', b.getAttribute('data-step') === String(step) ? 'true' : 'false');
+      });
+      textEl.innerHTML = texts[step];
+    }
+    btns.forEach(function(b){
+      b.addEventListener('click', function(){ render(parseInt(b.getAttribute('data-step'), 10)); });
+    });
+    render(1);
+
+    var played = false;
+    if ('IntersectionObserver' in window){
+      var io2 = new IntersectionObserver(function(entries){
+        entries.forEach(function(en){
+          if (en.isIntersecting && !played){
+            played = true;
+            var s = 1;
+            var timer = setInterval(function(){
+              s++;
+              if (s > 4){ clearInterval(timer); timer = null; return; }
+              render(s);
+            }, 1500);
+            io2.disconnect();
+          }
+        });
+      }, {threshold:.4});
+      io2.observe(fig);
+    }
+  }
+
+  /* PG calculator */
+  var osdN = document.getElementById('osdN');
+  var repN = document.getElementById('repN');
+  var perOsd = document.getElementById('perOsd');
+  var pgOut = document.getElementById('pgOut');
+  var pgHint = document.getElementById('pgHint');
+
+  function pow2ceil(n){
+    if (!isFinite(n) || n <= 1) return 1;
+    var p = 1;
+    while (p < n) p *= 2;
+    return p;
+  }
+  function calc(){
+    if (!pgOut) return;
+    var osd = Math.max(1, parseInt(osdN.value, 10) || 1);
+    var rep = Math.max(1, Math.min(6, parseInt(repN.value, 10) || 1));
+    var per = Math.max(10, parseInt(perOsd.value, 10) || 100);
+    var raw = osd * per / rep;
+    var pg = pow2ceil(raw);
+    pgOut.textContent = pg.toLocaleString('en-US');
+    pgHint.textContent = '原始值约 ' + Math.round(raw).toLocaleString('en-US') +
+      '，向上取到 2 的幂得 ' + pg.toLocaleString('en-US') +
+      '（每 OSD 实际约 ' + Math.round(pg * rep / osd) + ' 个 PG）。多池请按比例分摊。';
+  }
+  [osdN, repN, perOsd].forEach(function(el){
+    if (el){ el.addEventListener('input', calc); el.addEventListener('change', calc); }
+  });
+  calc();
+})();
+</script>
+</body>
+</html>
